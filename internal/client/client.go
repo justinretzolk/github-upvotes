@@ -11,10 +11,10 @@ import (
 )
 
 type Client struct {
-	Conn              *githubv4.Client
-	Organization      string
-	Project           int
-	ProjectItemCursor *string
+	Conn               *githubv4.Client
+	Organization       string
+	Project            int
+	ProjectItemsCursor *string
 }
 
 // NewClient generates a new Client
@@ -38,13 +38,8 @@ func NewClient() (*Client, error) {
 	}
 
 	if cursor, ok := os.LookupEnv("PROJECT_ITEM_CURSOR"); ok {
-		client.ProjectItemCursor = &cursor
+		client.ProjectItemsCursor = &cursor
 	}
 
 	return client, nil
-}
-
-// SetProjectItemCursor updates the Client's ProjectItemCursor
-func (c *Client) SetProjectItemCursor(cursor string) {
-	c.ProjectItemCursor = &cursor
 }

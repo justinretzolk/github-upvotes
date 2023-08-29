@@ -1,9 +1,5 @@
 package upvotes
 
-import (
-	"github.com/shurcooL/githubv4"
-)
-
 const (
 	itemTypeDraftIssue  = "DRAFT_ISSUE"
 	itemTypeIssue       = "ISSUE"
@@ -30,20 +26,28 @@ type UpvoteQuery struct {
 	} `graphql:"organization(login: $org)"`
 }
 
-// https://docs.github.com/en/graphql/reference/objects#pageinfo
-type PageInfo struct {
-	EndCursor   string `graphql:"endCursor"`
-	HasNextPage bool   `graphql:"hasNextPage"`
-}
-
-// RootReactions returns the total reactions to the issue or pull request that the Project Item is connected to
-func (u UpvoteQuery) RootReactions() int {
+// RootTotalReactions returns the total reactions to the issue or pull request that the Project Item is connected to
+func (u UpvoteQuery) RootTotalUpvotes() int {
 	node := u.Organization.Project.Items.Nodes[0]
 	if node.Type == itemTypeIssue {
 		return node.Content.Issue.Reactions.TotalCount
 	}
-
 	return node.Content.PullRequest.Reactions.TotalCount
+}
+
+// RootTotalComments returns the total number of comments on a linked issue or pull request
+func (u UpvoteQuery) RootTotalComments() int {
+	node := u.Organization.Project.Items.Nodes[0]
+	if node.Type == itemTypeIssue {
+		return node.Content.Issue.Comments.TotalCount
+	}
+	return node.Content.PullRequest.Comments.TotalCount
+}
+
+// https://docs.github.com/en/graphql/reference/objects#pageinfo
+type PageInfo struct {
+	EndCursor   string `graphql:"endCursor"`
+	HasNextPage bool   `graphql:"hasNextPage"`
 }
 
 // https://docs.github.com/en/graphql/reference/objects#issue
@@ -54,12 +58,38 @@ type IssueContentFragment struct {
 	TrackedIssues   ConnectionWithReactables `graphql:"trackedIssues(first: 10, after: $trackedIssuesCursor)"`
 }
 
+// HasNextPage returns true if any of the fields of IssueContentFragment have additional pages
+func (i IssueContentFragment) HasNextPage() bool {
+	if i.Comments.HasNextPage() || i.TrackedIssues.HasNextPage() || i.TrackedInIssues.HasNextPage() {
+		return true
+	}
+	return false
+}
+
+// Upvotes returns the total number of reactions to all comments and linked issues
+func (i IssueContentFragment) Upvotes() int {
+	return i.Comments.ReactableUpvotes() + i.TrackedIssues.ReactableUpvotes() + i.TrackedInIssues.ReactableUpvotes()
+}
+
 // https://docs.github.com/en/graphql/reference/objects#pullrequest
 type PullRequestContentFragment struct {
 	Closed                  bool                     `graphql:"closed"` // Candidate for removal if it's not useful
 	ClosingIssuesReferences ConnectionWithReactables `graphql:"closingIssuesReferences(first: 10, after: $closingIssuesReferencesCursor)"`
 	Comments                ConnectionWithReactables `graphql:"comments(first: 10, after: $commentsCursor)"`
 	Reactions               Reactions                `graphql:"reactions"`
+}
+
+// HasNextPage returns true if any of the fields of PullRequestContentFragment have additional pages
+func (p PullRequestContentFragment) HasNextPage() bool {
+	if p.Comments.HasNextPage() || p.ClosingIssuesReferences.HasNextPage() {
+		return true
+	}
+	return false
+}
+
+// Upvotes returns the total number of reactions to all comments and linked issues
+func (p PullRequestContentFragment) Upvotes() int {
+	return p.Comments.ReactableUpvotes() + p.ClosingIssuesReferences.ReactableUpvotes()
 }
 
 // https://docs.github.com/en/graphql/reference/objects#reactionconnection
@@ -75,9 +105,13 @@ type ConnectionWithReactables struct {
 	TotalCount int         `graphql:"totalCount"`
 }
 
-// Returns true if the connection has another page
-func (c ConnectionWithReactables) HasNextPage() bool {
-	return c.PageInfo.HasNextPage
+// ReactableUpvotes returns the sum of all reactions to the Reactables within a ConnectionWithReactables
+func (c ConnectionWithReactables) ReactableUpvotes() int {
+	var total int
+	for _, n := range c.Nodes {
+		total += n.Reactions.TotalCount
+	}
+	return total
 }
 
 // Returns the cursor marking the end of the current page
@@ -85,61 +119,12 @@ func (c ConnectionWithReactables) EndCursor() string {
 	return c.PageInfo.EndCursor
 }
 
-// Returns the total count of Reactables, as reported by the API
-func (c ConnectionWithReactables) ApiTotal() int {
-	return c.TotalCount
+// Returns true if the connection has another page
+func (c ConnectionWithReactables) HasNextPage() bool {
+	return c.PageInfo.HasNextPage
 }
 
 // Reactable is essentially an interface for objects that contain the "reactions" object
 type Reactable struct {
 	Reactions Reactions `graphql:"reactions"`
-}
-
-// processUpvoteQueryResponse takes a map[string]interface{} representing the variables of a query and then
-// parses the response to an upvote query. The variables are updated with the appropriate cursors, and the
-// function returns a boolean indicating whether there's additional pages of the connections, and two slices
-// of Reactables representing linked comments or issues, respectively.
-func (u *UpvoteQuery) processUpvoteQueryResponse(v map[string]interface{}) (hasNextPage bool, comments, issues []int) {
-
-	switch item := u.Organization.Project.Items.Nodes[0]; {
-	case item.Type == itemTypeIssue:
-		i := item.Content.Issue
-
-		// add the connections to the output
-		comments = append(comments, reactableUpvoteCounts(i.Comments.Nodes)...)
-		issues = append(issues, reactableUpvoteCounts(i.TrackedIssues.Nodes)...)
-		issues = append(issues, reactableUpvoteCounts(i.TrackedInIssues.Nodes)...)
-
-		// if there are no more pages of any of the connections, exit early
-		if i.Comments.HasNextPage() || i.TrackedIssues.HasNextPage() || i.TrackedInIssues.HasNextPage() {
-			hasNextPage = true
-			v["commentsCursor"] = githubv4.String(i.Comments.EndCursor())
-			v["trackedInIssuesCursor"] = githubv4.String(i.TrackedInIssues.EndCursor())
-			v["trackedIssuesCursor"] = githubv4.String(i.TrackedIssues.EndCursor())
-		}
-
-	case item.Type == itemTypePullRequest:
-		p := item.Content.PullRequest
-
-		// add the connections to the output
-		comments = append(comments, reactableUpvoteCounts(p.Comments.Nodes)...)
-		issues = append(issues, reactableUpvoteCounts(p.ClosingIssuesReferences.Nodes)...)
-
-		if p.Comments.HasNextPage() || p.ClosingIssuesReferences.HasNextPage() {
-			hasNextPage = true
-			v["commentsCursor"] = githubv4.String(p.Comments.EndCursor())
-			v["closingIssuesReferencesCursor"] = githubv4.String(p.ClosingIssuesReferences.EndCursor())
-		}
-	}
-
-	return
-}
-
-// reactableUpvoteCounts takes a slice of Reactables and returns a slice of ints
-// representing the number of upvotes on each of the Reactables
-func reactableUpvoteCounts(r []Reactable) (i []int) {
-	for _, n := range r {
-		i = append(i, n.Reactions.TotalCount)
-	}
-	return
 }
