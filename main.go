@@ -14,6 +14,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+
+	"github.com/justinretzolk/github-upvotes/internal/client"
+	"github.com/justinretzolk/github-upvotes/internal/upvotes"
 )
 
 func init() {
@@ -34,12 +37,12 @@ func init() {
 
 func main() {
 
-	client, err := NewClient()
+	client, err := client.NewClient()
 	if err != nil {
 		slog.Error(err.Error())
 	}
 
-	err = CalculateUpvotes(client)
+	err = upvotes.CalculateUpvotes(client)
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)

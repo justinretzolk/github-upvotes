@@ -1,23 +1,33 @@
-package main
+package upvotes
 
 import (
 	"github.com/shurcooL/githubv4"
 )
 
-// https://docs.github.com/en/graphql/reference/objects#organization
-type Organization struct {
-	Project Project `graphql:"projectV2(number: $project)"`
-}
+const (
+	itemTypeDraftIssue  = "DRAFT_ISSUE"
+	itemTypeIssue       = "ISSUE"
+	itemTypePullRequest = "PULL_REQUEST"
+)
 
-// https://docs.github.com/en/graphql/reference/objects#projectv2
-type Project struct {
-	Items ProjectItems `graphql:"items(first: 1, after: $projectItemsCursor)"`
-}
-
-// https://docs.github.com/en/graphql/reference/objects#projectv2itemconnection
-type ProjectItems struct {
-	PageInfo PageInfo      `graphql:"pageInfo"`
-	Nodes    []ProjectItem `graphql:"nodes"`
+// UpvoteQuery represents the struct needed to query for the number of upvotes on a Project Item
+type UpvoteQuery struct {
+	Organization struct {
+		Project struct {
+			Items struct {
+				PageInfo PageInfo `graphql:"pageInfo"`
+				Nodes    []struct {
+					ProjectItemId string `graphql:"id"`
+					Archived      bool   `graphql:"isArchived"`
+					Type          string `graphql:"type"`
+					Content       struct {
+						Issue       IssueContentFragment       `graphql:"... on Issue"`
+						PullRequest PullRequestContentFragment `graphql:"... on PullRequest"`
+					} `graphql:"content"`
+				} `graphql:"nodes"`
+			} `graphql:"items(first: 1, after: $projectItemsCursor)"`
+		} `graphql:"projectV2(number: $project)"`
+	} `graphql:"organization(login: $org)"`
 }
 
 // https://docs.github.com/en/graphql/reference/objects#pageinfo
@@ -26,33 +36,14 @@ type PageInfo struct {
 	HasNextPage bool   `graphql:"hasNextPage"`
 }
 
-const (
-	ItemTypeDraftIssue  = "DRAFT_ISSUE"
-	ItemTypeIssue       = "ISSUE"
-	ItemTypePullRequest = "PULL_REQUEST"
-)
-
-// https://docs.github.com/en/graphql/reference/objects#projectv2item
-type ProjectItem struct {
-	ProjectItemId string  `graphql:"id"`
-	Archived      bool    `graphql:"isArchived"`
-	Content       Content `graphql:"content"`
-	Type          string  `graphql:"type"`
-}
-
 // RootReactions returns the total reactions to the issue or pull request that the Project Item is connected to
-func (p ProjectItem) RootReactions() int {
-	if p.Type == ItemTypeIssue {
-		return p.Content.Issue.Reactions.TotalCount
+func (u UpvoteQuery) RootReactions() int {
+	node := u.Organization.Project.Items.Nodes[0]
+	if node.Type == itemTypeIssue {
+		return node.Content.Issue.Reactions.TotalCount
 	}
 
-	return p.Content.PullRequest.Reactions.TotalCount
-}
-
-// https://docs.github.com/en/graphql/reference/unions#projectv2itemcontent
-type Content struct {
-	Issue       IssueContentFragment       `graphql:"... on Issue"`
-	PullRequest PullRequestContentFragment `graphql:"... on PullRequest"`
+	return node.Content.PullRequest.Reactions.TotalCount
 }
 
 // https://docs.github.com/en/graphql/reference/objects#issue
@@ -95,18 +86,13 @@ func (c ConnectionWithReactables) EndCursor() string {
 }
 
 // Returns the total count of Reactables, as reported by the API
-func (c ConnectionWithReactables) Total() int {
+func (c ConnectionWithReactables) ApiTotal() int {
 	return c.TotalCount
 }
 
 // Reactable is essentially an interface for objects that contain the "reactions" object
 type Reactable struct {
 	Reactions Reactions `graphql:"reactions"`
-}
-
-// UpvoteQuery represents the struct needed to query for the number of upvotes on a Project Item
-type UpvoteQuery struct {
-	Organization Organization `graphql:"organization(login: $org)"`
 }
 
 // processUpvoteQueryResponse takes a map[string]interface{} representing the variables of a query and then
@@ -116,7 +102,7 @@ type UpvoteQuery struct {
 func (u *UpvoteQuery) processUpvoteQueryResponse(v map[string]interface{}) (hasNextPage bool, comments, issues []int) {
 
 	switch item := u.Organization.Project.Items.Nodes[0]; {
-	case item.Type == ItemTypeIssue:
+	case item.Type == itemTypeIssue:
 		i := item.Content.Issue
 
 		// add the connections to the output
@@ -132,7 +118,7 @@ func (u *UpvoteQuery) processUpvoteQueryResponse(v map[string]interface{}) (hasN
 			v["trackedIssuesCursor"] = githubv4.String(i.TrackedIssues.EndCursor())
 		}
 
-	case item.Type == ItemTypePullRequest:
+	case item.Type == itemTypePullRequest:
 		p := item.Content.PullRequest
 
 		// add the connections to the output

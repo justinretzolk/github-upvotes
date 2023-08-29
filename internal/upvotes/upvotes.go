@@ -1,15 +1,16 @@
-package main
+package upvotes
 
 import (
 	"context"
 	"log/slog"
 
+	"github.com/justinretzolk/github-upvotes/internal/client"
 	"github.com/shurcooL/githubv4"
 )
 
 // CalculateUpvotes iterates through a Project's Project Items, calculating the number of upvotes
 // for each one. It returns an error if any are encountered
-func CalculateUpvotes(c *Client) error {
+func CalculateUpvotes(c *client.Client) error {
 
 	for {
 		hasNextPage, err := calculateProjectItemUpvotes(c)
@@ -27,7 +28,7 @@ func CalculateUpvotes(c *Client) error {
 
 // calculateProjectItemUpvotes uses the Client's ProjectItemCursor to get the next Project Item to check
 // and returns the new ProjectItemCursor and a boolean indicating whether there are additional items to check, or an error
-func calculateProjectItemUpvotes(c *Client) (bool, error) {
+func calculateProjectItemUpvotes(c *client.Client) (bool, error) {
 	var query UpvoteQuery
 
 	variables := map[string]interface{}{
@@ -63,7 +64,7 @@ func calculateProjectItemUpvotes(c *Client) (bool, error) {
 		}
 	}
 
-	rootReactions := query.Organization.Project.Items.Nodes[0].RootReactions()
+	rootReactions := query.RootReactions()
 	commentReactions := sum(allComments)
 	linkedReactions := sum(allLinkedIssues)
 
