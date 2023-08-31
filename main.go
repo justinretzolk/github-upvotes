@@ -3,7 +3,7 @@ package main
 // TODO
 // - [x] Read GH token, Project info from env
 // - [ ] Iterate through the items
-// 		- [ ] Read the item, handle pagination to get totals
+// 		- [x] Read the item, handle pagination to get totals
 //		- [ ] Update the Project Item's Upvote count
 
 // FUTURE
