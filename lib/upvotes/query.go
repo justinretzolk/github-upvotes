@@ -7,11 +7,7 @@ const (
 )
 
 type UpvoteQuery struct {
-	Organization struct {
-		Project struct {
-			ProjectItems ProjectItems `graphql:"items(first: 1, after: $projectItemsCursor)"`
-		} `graphql:"projectV2(number: $project)"`
-	} `graphql:"organization(login: $org)"`
+	Organization Organization `graphql:"organization(login: $org)"`
 }
 
 // getProjectItems returns the ProjectItems from the query
@@ -66,6 +62,14 @@ func (u UpvoteQuery) ProjectItemHasNextPage() bool {
 func (u UpvoteQuery) HasNextPage() (bool, string) {
 	p := u.getProjectItems()
 	return p.hasNextPage(), p.endCursor()
+}
+
+type Organization struct {
+	Project Project `graphql:"projectV2(number: $project)"`
+}
+
+type Project struct {
+	ProjectItems ProjectItems `graphql:"items(first: 1, after: $projectItemsCursor)"`
 }
 
 // ProjectItems represents the list of Project Items connected to a Project
