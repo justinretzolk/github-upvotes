@@ -51,10 +51,10 @@ func Execute() {
 
 func init() {
 	// flags for inputs, org, project, token, cursor
-	rootCmd.PersistentFlags().StringVar(&cursor, "cursor", "", "the cursor to begin querying the project from")
-	rootCmd.PersistentFlags().BoolVar(&write, "write", false, "update the project with the results")
-	rootCmd.PersistentFlags().StringVar(&org, "org", "", "organization that owns the project")
-	rootCmd.PersistentFlags().IntVar(&project, "project", 0, "the number of the project to query")
+	rootCmd.PersistentFlags().StringVar(&cursor, "cursor", "", "the cursor to begin querying the project from (env: GITHUB_CURSOR)")
+	rootCmd.PersistentFlags().BoolVar(&write, "write", false, "update the project with the results (env: GITHUB_WRITE)")
+	rootCmd.PersistentFlags().StringVar(&org, "org", "", "organization that owns the project (env: GITHUB_ORG)")
+	rootCmd.PersistentFlags().IntVar(&project, "project", 0, "the number of the project to query (env: GITHUB_PROJECT)")
 
 	// viper bindings
 	viper.BindPFlag("cursor", rootCmd.Flags().Lookup("cursor"))
