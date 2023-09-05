@@ -16,7 +16,7 @@ const (
 
 func TestGetProjectItemId(t *testing.T) {
 	p := ProjectItem{
-		ProjectItemId: "test",
+		Id: "test",
 	}
 
 	q := generateTestUpvoteQuery(p)
@@ -38,11 +38,15 @@ func TestProjectItemCommentCount(t *testing.T) {
 			switch testcase {
 			case itemTypeIssue:
 				cf = IssueContentFragment{
-					Comments: comments,
+					CommonContentFragment: CommonContentFragment{
+						Comments: comments,
+					},
 				}
 			case itemTypePullRequest:
 				cf = PullRequestContentFragment{
-					Comments: comments,
+					CommonContentFragment: CommonContentFragment{
+						Comments: comments,
+					},
 				}
 			}
 
@@ -80,13 +84,17 @@ func TestProjectItemConnectionsUpvotes(t *testing.T) {
 			switch testcase.itemType {
 			case itemTypeIssue:
 				cf = IssueContentFragment{
-					Comments:        cwr,
+					CommonContentFragment: CommonContentFragment{
+						Comments: cwr,
+					},
 					TrackedInIssues: cwr,
 					TrackedIssues:   cwr,
 				}
 			case itemTypePullRequest:
 				cf = PullRequestContentFragment{
-					Comments:                cwr,
+					CommonContentFragment: CommonContentFragment{
+						Comments: cwr,
+					},
 					ClosingIssuesReferences: cwr,
 				}
 			}
@@ -121,13 +129,17 @@ func TestProjectItemConnectionCursors(t *testing.T) {
 			switch testcase.itemType {
 			case itemTypeIssue:
 				cf = IssueContentFragment{
-					Comments:        c,
+					CommonContentFragment: CommonContentFragment{
+						Comments: c,
+					},
 					TrackedIssues:   c,
 					TrackedInIssues: c,
 				}
 			case itemTypePullRequest:
 				cf = PullRequestContentFragment{
-					Comments:                c,
+					CommonContentFragment: CommonContentFragment{
+						Comments: c,
+					},
 					ClosingIssuesReferences: c,
 				}
 			}
@@ -153,11 +165,15 @@ func TestProjectItemReactionsCount(t *testing.T) {
 			switch testcase {
 			case itemTypeIssue:
 				cf = IssueContentFragment{
-					Reactions: r,
+					CommonContentFragment: CommonContentFragment{
+						Reactions: r,
+					},
 				}
 			case itemTypePullRequest:
 				cf = PullRequestContentFragment{
-					Reactions: r,
+					CommonContentFragment: CommonContentFragment{
+						Reactions: r,
+					},
 				}
 			}
 
@@ -195,9 +211,11 @@ func TestProjectItemHasNextPage(t *testing.T) {
 			switch testcase.itemType {
 			case itemTypeIssue:
 				cf = IssueContentFragment{
-					Comments: ConnectionWithReactables{
-						PageInfo: PageInfo{
-							HasNextPage: testcase.comments,
+					CommonContentFragment: CommonContentFragment{
+						Comments: ConnectionWithReactables{
+							PageInfo: PageInfo{
+								HasNextPage: testcase.comments,
+							},
 						},
 					},
 					TrackedIssues: ConnectionWithReactables{
@@ -213,9 +231,11 @@ func TestProjectItemHasNextPage(t *testing.T) {
 				}
 			case itemTypePullRequest:
 				cf = PullRequestContentFragment{
-					Comments: ConnectionWithReactables{
-						PageInfo: PageInfo{
-							HasNextPage: testcase.comments,
+					CommonContentFragment: CommonContentFragment{
+						Comments: ConnectionWithReactables{
+							PageInfo: PageInfo{
+								HasNextPage: testcase.comments,
+							},
 						},
 					},
 					ClosingIssuesReferences: ConnectionWithReactables{
