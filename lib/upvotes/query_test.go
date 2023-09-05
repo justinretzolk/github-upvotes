@@ -1,6 +1,7 @@
 package upvotes
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -8,6 +9,10 @@ var itemTypeTestCases = []string{
 	itemTypeIssue,
 	itemTypePullRequest,
 }
+
+const (
+	endCursor = "endcursor1234567890"
+)
 
 func TestGetProjectItemId(t *testing.T) {
 	p := ProjectItem{
@@ -95,15 +100,54 @@ func TestProjectItemConnectionsUpvotes(t *testing.T) {
 	}
 }
 
-// TestProjectItemConnectionCursors
+func TestProjectItemConnectionCursors(t *testing.T) {
+	testcases := []struct {
+		itemType string
+		want     map[string]string
+	}{
+		{itemTypeIssue, map[string]string{"commentsCursor": endCursor, "trackedInIssuesCursor": endCursor, "trackedIssuesCursor": endCursor}},
+		{itemTypePullRequest, map[string]string{"commentsCursor": endCursor, "closingIssueReferencesCursor": endCursor}},
+	}
 
-// TestProjectItemReactionsCount
+	c := ConnectionWithReactables{
+		PageInfo: PageInfo{
+			EndCursor: endCursor,
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.itemType, func(t *testing.T) {
+			var cf contentFragment
+			switch testcase.itemType {
+			case itemTypeIssue:
+				cf = IssueContentFragment{
+					Comments:        c,
+					TrackedIssues:   c,
+					TrackedInIssues: c,
+				}
+			case itemTypePullRequest:
+				cf = PullRequestContentFragment{
+					Comments:                c,
+					ClosingIssuesReferences: c,
+				}
+			}
+
+			q := generateFilledTestUpvoteQuery(testcase.itemType, cf)
+
+			if got := q.ProjectItemConnectionCursors(); !reflect.DeepEqual(got, testcase.want) {
+				t.Errorf("got: %v, want: %v", got, testcase.want)
+			}
+		})
+	}
+}
+
 func TestProjectItemReactionsCount(t *testing.T) {
+	r := Reactions{
+		TotalCount: 1,
+	}
+
 	for _, testcase := range itemTypeTestCases {
 		t.Run(testcase, func(t *testing.T) {
-			r := Reactions{
-				TotalCount: 1,
-			}
 
 			var cf contentFragment
 			switch testcase {
@@ -124,12 +168,91 @@ func TestProjectItemReactionsCount(t *testing.T) {
 			}
 		})
 	}
-
 }
 
-// TestProjectItemHasNextPage
+func TestProjectItemHasNextPage(t *testing.T) {
+	testcases := []struct {
+		name        string
+		itemType    string
+		want        bool
+		comments    bool
+		tracked     bool
+		trackedIn   bool
+		closingRefs bool
+	}{
+		{"IssueNoMorePages", itemTypeIssue, false, false, false, false, false},
+		{"IssueMoreComments", itemTypeIssue, true, true, false, false, false},
+		{"IssueMoreTrackedIssues", itemTypeIssue, true, false, true, false, false},
+		{"IssueMoreTrackedInIssues", itemTypeIssue, true, false, false, true, false},
+		{"PullRequestNoMorePages", itemTypePullRequest, false, false, false, false, false},
+		{"PullRequestMoreComments", itemTypePullRequest, true, true, false, false, false},
+		{"PullRequestMoreClosingIssueReferences", itemTypePullRequest, true, false, false, false, true},
+	}
 
-// TestHasNextPage
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			var cf contentFragment
+			switch testcase.itemType {
+			case itemTypeIssue:
+				cf = IssueContentFragment{
+					Comments: ConnectionWithReactables{
+						PageInfo: PageInfo{
+							HasNextPage: testcase.comments,
+						},
+					},
+					TrackedIssues: ConnectionWithReactables{
+						PageInfo: PageInfo{
+							HasNextPage: testcase.tracked,
+						},
+					},
+					TrackedInIssues: ConnectionWithReactables{
+						PageInfo: PageInfo{
+							HasNextPage: testcase.trackedIn,
+						},
+					},
+				}
+			case itemTypePullRequest:
+				cf = PullRequestContentFragment{
+					Comments: ConnectionWithReactables{
+						PageInfo: PageInfo{
+							HasNextPage: testcase.comments,
+						},
+					},
+					ClosingIssuesReferences: ConnectionWithReactables{
+						PageInfo: PageInfo{
+							HasNextPage: testcase.closingRefs,
+						},
+					},
+				}
+			}
+
+			q := generateFilledTestUpvoteQuery(testcase.itemType, cf)
+
+			if got := q.ProjectItemHasNextPage(); got != testcase.want {
+				t.Errorf("got: %v, want %v", got, testcase.want)
+			}
+		})
+	}
+}
+
+func TestHasNextPage(t *testing.T) {
+	q := UpvoteQuery{
+		Organization: Organization{
+			Project: Project{
+				ProjectItems: ProjectItems{
+					PageInfo: PageInfo{
+						HasNextPage: true,
+						EndCursor:   endCursor,
+					},
+				},
+			},
+		},
+	}
+
+	if h, c := q.HasNextPage(); !h || c != endCursor {
+		t.Errorf("got: %v, %v, want: true, %v", h, c, endCursor)
+	}
+}
 
 func generateTestUpvoteQuery(p ProjectItem) UpvoteQuery {
 	return UpvoteQuery{
