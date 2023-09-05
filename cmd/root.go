@@ -1,43 +1,40 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/justinretzolk/github-upvotes/lib/upvotes"
-	"github.com/shurcooL/githubv4"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"golang.org/x/oauth2"
 )
 
 var (
 	// flags
-	cursor  string
-	org     string
-	project int
-	write   bool
+	cursor         string
+	org            string
+	field_name     string
+	field_id       string
+	project_id     string
+	project_number int
+	write          bool
 
 	rootCmd = &cobra.Command{
 		Use:   "github-upvotes",
 		Short: "github-upvotes calculates upvotes for items in a GitHub Project",
 		Long:  ` `, // todo
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateConfig(); err != nil {
-				slog.Error(err.Error())
-				return
+				return err
 			}
 
-			src := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: viper.GetString("token")})
-			httpClient := oauth2.NewClient(context.Background(), src)
-			client := githubv4.NewClient(httpClient)
-
-			if err := upvotes.CalculateUpvotes(client); err != nil {
-				slog.Error(err.Error())
-				return
+			client := upvotes.NewCalculator()
+			if err := client.CalculateUpvotes(); err != nil {
+				return err
 			}
+
+			return nil
 		},
 	}
 )
@@ -52,23 +49,28 @@ func Execute() {
 func init() {
 	// flags for inputs, org, project, token, cursor
 	rootCmd.PersistentFlags().StringVar(&cursor, "cursor", "", "the cursor to begin querying the project from (env: GITHUB_CURSOR)")
-	rootCmd.PersistentFlags().BoolVar(&write, "write", false, "update the project with the results (env: GITHUB_WRITE)")
 	rootCmd.PersistentFlags().StringVar(&org, "org", "", "organization that owns the project (env: GITHUB_ORG)")
-	rootCmd.PersistentFlags().IntVar(&project, "project", 0, "the number of the project to query (env: GITHUB_PROJECT)")
+	rootCmd.PersistentFlags().StringVar(&field_name, "field_name", "", "the name of the project field used to track upvotes (env: GITHUB_FIELD_NAME)")
+	rootCmd.PersistentFlags().StringVar(&field_id, "field_id", "", "the id of the project field used to track upvotes (env: GITHUB_FIELD_ID)")
+	rootCmd.PersistentFlags().StringVar(&project_id, "project_id", "", "the id of the project to query (env: GITHUB_PROJECT_ID)")
+	rootCmd.PersistentFlags().IntVar(&project_number, "project_number", 0, "the number of the project to query (env: GITHUB_PROJECT_NUMBER)")
+	rootCmd.PersistentFlags().BoolVar(&write, "write", false, "update the project with the results (env: GITHUB_WRITE)")
 
 	// viper bindings
 	viper.BindPFlag("cursor", rootCmd.Flags().Lookup("cursor"))
 	viper.BindPFlag("org", rootCmd.Flags().Lookup("org"))
-	viper.BindPFlag("project", rootCmd.Flags().Lookup("project"))
+	viper.BindPFlag("field_name", rootCmd.Flags().Lookup("field_name"))
+	viper.BindPFlag("field_id", rootCmd.Flags().Lookup("field_id"))
+	viper.BindPFlag("project_id", rootCmd.Flags().Lookup("project_id"))
+	viper.BindPFlag("project_number", rootCmd.Flags().Lookup("project_number"))
 	viper.BindPFlag("write", rootCmd.Flags().Lookup("update"))
-
 	viper.SetEnvPrefix("GITHUB")
 	viper.AutomaticEnv()
 }
 
 func validateConfig() error {
 	var missing []string
-	for _, v := range []string{"org", "project", "token"} {
+	for _, v := range []string{"org", "project_number", "field_name", "token"} {
 		if !viper.IsSet(v) {
 			missing = append(missing, v)
 		}
@@ -77,5 +79,7 @@ func validateConfig() error {
 	if len(missing) > 0 {
 		return fmt.Errorf(fmt.Sprintf("missing required configuration: %v", missing))
 	}
+
+	slog.Info("configuration successfully loaded")
 	return nil
 }

@@ -69,21 +69,19 @@ type Organization struct {
 }
 
 type Project struct {
+	Id           string       `graphql:"id"`
 	ProjectItems ProjectItems `graphql:"items(first: 1, after: $projectItemsCursor)"`
 }
 
-// ProjectItems represents the list of Project Items connected to a Project
 type ProjectItems struct {
 	PageInfo PageInfo      `graphql:"pageInfo"`
 	Nodes    []ProjectItem `graphql:"nodes"`
 }
 
-// endCursor returns the end cursor of the ProjectItems list
 func (p ProjectItems) endCursor() string {
 	return p.PageInfo.EndCursor
 }
 
-// hasNextPage returns true if there are additional Project Items to query
 func (p ProjectItems) hasNextPage() bool {
 	return p.PageInfo.HasNextPage
 }
@@ -96,8 +94,15 @@ type PageInfo struct {
 type ProjectItem struct {
 	ProjectItemId string  `graphql:"id"`
 	Archived      bool    `graphql:"isArchived"`
+	Field         Field   `graphql:"fieldValueByName(name: $fieldName)"`
 	Type          string  `graphql:"type"`
 	Content       Content `graphql:"content"`
+}
+
+type Field struct {
+	Value struct {
+		Number int `graphql:"number"`
+	} `graphql:"... on ProjectV2ItemFieldNumberValue"`
 }
 
 type Content struct {
