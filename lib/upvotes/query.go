@@ -8,59 +8,57 @@ const (
 
 type UpvoteQuery struct {
 	Organization Organization `graphql:"organization(login: $org)"`
+	RateLimit    RateLimit
 }
 
-// getProjectItems returns the ProjectItems from the query
-func (u UpvoteQuery) getProjectItems() ProjectItems {
-	return u.Organization.Project.ProjectItems
+// ProjectItemId returns the ID of the current Project Item
+func (u UpvoteQuery) ProjectItemId() string {
+	return u.Organization.Project.ProjectItems.Nodes[0].Id
 }
 
-// getProjectItem returns the current Project Item from the query
-func (u UpvoteQuery) getProjectItem() ProjectItem {
-	return u.getProjectItems().Nodes[0]
+// ProjectItemType returns the type of the current Project Item
+func (u UpvoteQuery) ProjectItemType() string {
+	return u.Organization.Project.ProjectItems.Nodes[0].Type
 }
 
-// getProjectItemContent returns the Issue or Pull Request that is connected to the Project Item
-func (u UpvoteQuery) getProjectItemContent() contentFragment {
-	node := u.getProjectItem()
-	if node.Type == itemTypeIssue {
-		return node.Content.Issue
+// Skip returns true if the current Project Item is closed or archived
+func (u UpvoteQuery) Skip() bool {
+	var s bool
+	node := u.Organization.Project.ProjectItems.Nodes[0]
+	if node.IsArchived || node.isClosed() {
+		s = true
 	}
-	return node.Content.PullRequest
-}
-
-func (u UpvoteQuery) GetProjectItemId() string {
-	return u.getProjectItem().ProjectItemId
+	return s
 }
 
 // ProjectItemCommentCount returns the number of comments on the Issue or Pull Request connected to the current Project Item
-func (u UpvoteQuery) ProjectItemCommentCount() int {
-	return u.getProjectItemContent().commentCount()
+func (u UpvoteQuery) ProjectItemCommentsCount() int {
+	return u.Organization.Project.ProjectItems.Nodes[0].commentsCount()
 }
 
 // ProjectItemConnectionsUpvotes returns the number of upvotes on the connections to the Issue or Pull Request connected to the current Project Item
 func (u UpvoteQuery) ProjectItemConnectionsUpvotes() int {
-	return u.getProjectItemContent().connectionUpvotes()
+	return u.Organization.Project.ProjectItems.Nodes[0].connectionsUpvotes()
 }
 
 // ProjectItemConnectionCursors returns a map of the cursors for each of the connection types for the Issue or Pull Request connected to the current Project Item
-func (u UpvoteQuery) ProjectItemConnectionCursors() map[string]string {
-	return u.getProjectItemContent().connectionCursors()
+func (u UpvoteQuery) ProjectItemConnectionsCursors() map[string]string {
+	return u.Organization.Project.ProjectItems.Nodes[0].connectionsCursors()
 }
 
 // ProjectItemReactionsCount returns the number of reactions to the Issue or Pull Request connected to the current Project Item
 func (u UpvoteQuery) ProjectItemReactionsCount() int {
-	return u.getProjectItemContent().reactionsCount()
+	return u.Organization.Project.ProjectItems.Nodes[0].reactionsCount()
 }
 
 // ProjectItemHasNextPage returns true if any of the connections to the Issue or Pull Request connected to the current Project Item have additional pages of data
 func (u UpvoteQuery) ProjectItemHasNextPage() bool {
-	return u.getProjectItemContent().hasNextPage()
+	return u.Organization.Project.ProjectItems.Nodes[0].hasNextPage()
 }
 
 // HasNextPage returns true and the value of the EndCursor if there are additional Project Items to query. Otherwise it returns false and an empty string
 func (u UpvoteQuery) HasNextPage() (bool, string) {
-	p := u.getProjectItems()
+	p := u.Organization.Project.ProjectItems
 	return p.hasNextPage(), p.endCursor()
 }
 
@@ -68,14 +66,18 @@ type Organization struct {
 	Project Project `graphql:"projectV2(number: $project)"`
 }
 
+type RateLimit struct {
+	Remaining int
+}
+
 type Project struct {
-	Id           string       `graphql:"id"`
+	Id           string
 	ProjectItems ProjectItems `graphql:"items(first: 1, after: $projectItemsCursor)"`
 }
 
 type ProjectItems struct {
-	PageInfo PageInfo      `graphql:"pageInfo"`
-	Nodes    []ProjectItem `graphql:"nodes"`
+	PageInfo PageInfo
+	Nodes    []ProjectItem
 }
 
 func (p ProjectItems) endCursor() string {
@@ -87,21 +89,63 @@ func (p ProjectItems) hasNextPage() bool {
 }
 
 type PageInfo struct {
-	EndCursor   string `graphql:"endCursor"`
-	HasNextPage bool   `graphql:"hasNextPage"`
+	EndCursor   string
+	HasNextPage bool
 }
 
 type ProjectItem struct {
-	ProjectItemId string  `graphql:"id"`
-	Archived      bool    `graphql:"isArchived"`
-	Field         Field   `graphql:"fieldValueByName(name: $fieldName)"`
-	Type          string  `graphql:"type"`
-	Content       Content `graphql:"content"`
+	Id         string
+	IsArchived bool
+	Field      Field `graphql:"fieldValueByName(name: $fieldName)"`
+	Type       string
+	Content    Content
+}
+
+func (p ProjectItem) isClosed() bool {
+	if p.Type == itemTypeIssue {
+		return p.Content.Issue.Closed
+	}
+	return p.Content.PullRequest.Closed
+}
+
+func (p ProjectItem) commentsCount() int {
+	if p.Type == itemTypeIssue {
+		return p.Content.Issue.commentsCount()
+	}
+	return p.Content.PullRequest.commentsCount()
+}
+
+func (p ProjectItem) reactionsCount() int {
+	if p.Type == itemTypeIssue {
+		return p.Content.Issue.reactionsCount()
+	}
+	return p.Content.PullRequest.reactionsCount()
+}
+
+func (p ProjectItem) connectionsUpvotes() int {
+	if p.Type == itemTypeIssue {
+		return p.Content.Issue.connectionsUpvotes()
+	}
+	return p.Content.PullRequest.connectionsUpvotes()
+}
+
+func (p ProjectItem) connectionsCursors() map[string]string {
+	if p.Type == itemTypeIssue {
+		return p.Content.Issue.connectionsCursors()
+	}
+	return p.Content.PullRequest.connectionsCursors()
+}
+
+func (p ProjectItem) hasNextPage() bool {
+	if p.Type == itemTypeIssue {
+		return p.Content.Issue.hasNextPage()
+	}
+	return p.Content.PullRequest.hasNextPage()
 }
 
 type Field struct {
 	Value struct {
-		Number int `graphql:"number"`
+		Number float64 `graphql:"number"`
 	} `graphql:"... on ProjectV2ItemFieldNumberValue"`
 }
 
@@ -110,35 +154,27 @@ type Content struct {
 	PullRequest PullRequestContentFragment `graphql:"... on PullRequest"`
 }
 
-// contentFragment is an interface to help retrieve information about the Issue or Pull Request that is connected to the Project Item
 type contentFragment interface {
-	commentCount() int
-	connectionUpvotes() int
-	connectionCursors() map[string]string
+	commentsCount() int
 	reactionsCount() int
+	connectionsUpvotes() int
+	connectionsCursors() map[string]string
 	hasNextPage() bool
 }
 
-// https://docs.github.com/en/graphql/reference/objects#issue
 type IssueContentFragment struct {
-	Comments        ConnectionWithReactables `graphql:"comments(first: 10, after: $commentsCursor)"`
-	Reactions       Reactions                `graphql:"reactions"`
+	CommonContentFragment
 	TrackedInIssues ConnectionWithReactables `graphql:"trackedInIssues(first: 10, after: $trackedInIssuesCursor)"`
 	TrackedIssues   ConnectionWithReactables `graphql:"trackedIssues(first: 10, after: $trackedIssuesCursor)"`
 }
 
-// commentCount returns the total number of comments
-func (i IssueContentFragment) commentCount() int {
-	return i.Comments.TotalCount
-}
-
-// connectionUpvotes returns the total number of reactions to all comments and linked issues
-func (i IssueContentFragment) connectionUpvotes() int {
+// connectionsUpvotes returns the total number of reactions to all connections
+func (i IssueContentFragment) connectionsUpvotes() int {
 	return i.Comments.reactableUpvotes() + i.TrackedIssues.reactableUpvotes() + i.TrackedInIssues.reactableUpvotes()
 }
 
-// connectionCursors returns the cursors for each of the connection types
-func (i IssueContentFragment) connectionCursors() map[string]string {
+// connectionsCursors returns the cursors for each of the connection types
+func (i IssueContentFragment) connectionsCursors() map[string]string {
 	return map[string]string{
 		"commentsCursor":        i.Comments.endCursor(),
 		"trackedInIssuesCursor": i.TrackedInIssues.endCursor(),
@@ -146,12 +182,7 @@ func (i IssueContentFragment) connectionCursors() map[string]string {
 	}
 }
 
-// reactionsCount returns the total number of reactions
-func (i IssueContentFragment) reactionsCount() int {
-	return i.Reactions.TotalCount
-}
-
-// hasNextPage returns true if any of the fields of IssueContentFragment have additional pages
+// hasNextPage returns true if any of the connections have additional pages
 func (i IssueContentFragment) hasNextPage() bool {
 	if i.Comments.hasNextPage() || i.TrackedIssues.hasNextPage() || i.TrackedInIssues.hasNextPage() {
 		return true
@@ -159,38 +190,25 @@ func (i IssueContentFragment) hasNextPage() bool {
 	return false
 }
 
-// https://docs.github.com/en/graphql/reference/objects#pullrequest
 type PullRequestContentFragment struct {
-	Closed                  bool                     `graphql:"closed"` // Candidate for removal if it's not useful
+	CommonContentFragment
 	ClosingIssuesReferences ConnectionWithReactables `graphql:"closingIssuesReferences(first: 10, after: $closingIssuesReferencesCursor)"`
-	Comments                ConnectionWithReactables `graphql:"comments(first: 10, after: $commentsCursor)"`
-	Reactions               Reactions                `graphql:"reactions"`
 }
 
-// commentCount returns the total number of comments
-func (p PullRequestContentFragment) commentCount() int {
-	return p.Comments.TotalCount
-}
-
-// connectionUpvotes returns the total number of reactions to all comments and linked issues
-func (p PullRequestContentFragment) connectionUpvotes() int {
+// connectionsUpvotes returns the total number of reactions to all connections
+func (p PullRequestContentFragment) connectionsUpvotes() int {
 	return p.Comments.reactableUpvotes() + p.ClosingIssuesReferences.reactableUpvotes()
 }
 
 // connectionCursors returns the cursors for each of the connection types
-func (p PullRequestContentFragment) connectionCursors() map[string]string {
+func (p PullRequestContentFragment) connectionsCursors() map[string]string {
 	return map[string]string{
 		"commentsCursor":               p.Comments.endCursor(),
 		"closingIssueReferencesCursor": p.ClosingIssuesReferences.endCursor(),
 	}
 }
 
-// reactionsCount returns the total number of reactions
-func (p PullRequestContentFragment) reactionsCount() int {
-	return p.Reactions.TotalCount
-}
-
-// hasNextPage returns true if any of the fields of PullRequestContentFragment have additional pages
+// hasNextPage returns true if any of the connections have additional pages
 func (p PullRequestContentFragment) hasNextPage() bool {
 	if p.Comments.hasNextPage() || p.ClosingIssuesReferences.hasNextPage() {
 		return true
@@ -198,16 +216,31 @@ func (p PullRequestContentFragment) hasNextPage() bool {
 	return false
 }
 
-type Reactions struct {
-	TotalCount int `graphql:"totalCount"`
+type CommonContentFragment struct {
+	Closed    bool
+	Comments  ConnectionWithReactables `graphql:"comments(first: 10, after: $commentsCursor)"`
+	Reactions Reactions
 }
 
-// ConnectionWithReactables represents a connection to an Issue or Pull Request that
-// This is basically an interface representing a connection between the item and reactable item(s).
+// commentsCount returns the number of comments to the Project Item
+func (c CommonContentFragment) commentsCount() int {
+	return c.Comments.TotalCount
+}
+
+// reactionsCount returns the number of reactions to the Project Item
+func (c CommonContentFragment) reactionsCount() int {
+	return c.Reactions.TotalCount
+}
+
+type Reactions struct {
+	TotalCount int
+}
+
+// ConnectionWithReactables represents a connection to a Project Item that can be reacted to
 type ConnectionWithReactables struct {
-	Nodes      []Reactable `graphql:"nodes"`
-	PageInfo   PageInfo    `graphql:"pageInfo"`
-	TotalCount int         `graphql:"totalCount"`
+	Nodes      []Reactable
+	PageInfo   PageInfo
+	TotalCount int
 }
 
 // reactableUpvotes returns the sum of all reactions to the Reactables within a ConnectionWithReactables
@@ -218,17 +251,17 @@ func (c ConnectionWithReactables) reactableUpvotes() (total int) {
 	return
 }
 
-// EndCursor returns the cursor marking the end of the current page
+// endCursor returns the cursor marking the end of the current page
 func (c ConnectionWithReactables) endCursor() string {
 	return c.PageInfo.EndCursor
 }
 
-// HasNextPage returns true if the connection has another page
+// hasNextPage returns true if the connection has another page
 func (c ConnectionWithReactables) hasNextPage() bool {
 	return c.PageInfo.HasNextPage
 }
 
-// Reactable is essentially an interface for objects that contain the "reactions" object
+// Reactable represents something that can be reacted to (i.e. a comment or issue)
 type Reactable struct {
-	Reactions Reactions `graphql:"reactions"`
+	Reactions Reactions
 }

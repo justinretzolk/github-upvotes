@@ -13,6 +13,7 @@ type Calculator struct {
 	Client *githubv4.Client
 }
 
+// NewCalculator returns a populated Calendar
 func NewCalculator() Calculator {
 	src := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: viper.GetString("token")})
 	httpClient := oauth2.NewClient(context.Background(), src)
@@ -69,7 +70,21 @@ func (c Calculator) calculateProjectItemUpvotes() (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		projectItemID = query.GetProjectItemId()
+
+		projectItemID = query.ProjectItemId()
+
+		// if the item is archived, a draft item, or if the underlying issue or pull request
+		// is closed, skip it
+		if len(query.Organization.Project.ProjectItems.Nodes) < 1 || query.Skip() {
+			slog.Info("skipping inactive project item", "project_item_id", projectItemID)
+			hasNextPage, cursor := query.HasNextPage()
+
+			if hasNextPage {
+				viper.Set("cursor", cursor)
+			}
+
+			return hasNextPage, nil
+		}
 
 		upvotes += query.ProjectItemConnectionsUpvotes()
 
@@ -77,7 +92,14 @@ func (c Calculator) calculateProjectItemUpvotes() (bool, error) {
 			break
 		}
 
-		cursors := query.ProjectItemConnectionCursors()
+		// respect the rate limit, stopping a bit early to account for pagination needs of later requests
+		if query.RateLimit.Remaining < 10 {
+			slog.Info("respecting rate limit and stopping query")
+			hasNextPage, _ := query.HasNextPage()
+			return hasNextPage, nil
+		}
+
+		cursors := query.ProjectItemConnectionsCursors()
 		for k, v := range cursors {
 			vars[k] = githubv4.String(v)
 		}
@@ -85,8 +107,8 @@ func (c Calculator) calculateProjectItemUpvotes() (bool, error) {
 	}
 
 	// add number of reactions, comments to the total upvotes
-	upvotes += query.ProjectItemReactionsCount() + query.ProjectItemCommentCount()
-	slog.Info("upvotes calculated", "project_item_id", projectItemID, "total_upvotes", upvotes)
+	upvotes += query.ProjectItemReactionsCount() + query.ProjectItemCommentsCount()
+	slog.Info("upvotes calculated", "project_item_id", projectItemID, "total_upvotes", upvotes, "cursor", viper.GetString("cursor"))
 
 	if viper.GetBool("write") {
 		if err := c.updateProjectItem(projectItemID, upvotes); err != nil {
@@ -156,7 +178,7 @@ func (c Calculator) updateProjectItem(i string, u int) error {
 	if err := c.Client.Mutate(context.Background(), &mutation, input, nil); err != nil {
 		return err
 	}
-	slog.Info("project item updated", "project_item_id", i, "mutation_id", mutation.UpdateProjectItemV2FieldValue.ClientMutationId)
+	slog.Info("project item updated", "project_item_id", i)
 
 	return nil
 }
