@@ -71,7 +71,7 @@ func init() {
 func validateConfig() error {
 	var missing []string
 	for _, v := range []string{"org", "project_number", "field_name", "token"} {
-		if !viper.IsSet(v) {
+		if viper.IsSet(v) {
 			missing = append(missing, v)
 		}
 	}

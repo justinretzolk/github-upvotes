@@ -14,19 +14,83 @@ const (
 	endCursor = "endcursor1234567890"
 )
 
-func TestGetProjectItemId(t *testing.T) {
+func TestProjectItemId(t *testing.T) {
 	p := ProjectItem{
 		Id: "test",
 	}
 
 	q := generateTestUpvoteQuery(p)
 
-	if got := q.GetProjectItemId(); got != "test" {
+	if got := q.ProjectItemId(); got != "test" {
 		t.Errorf("got: %v, want: test", got)
 	}
 }
 
-func TestProjectItemCommentCount(t *testing.T) {
+func TestProjectItemType(t *testing.T) {
+	for _, testcase := range itemTypeTestCases {
+		t.Run(testcase, func(t *testing.T) {
+			var cf contentFragment
+
+			switch testcase {
+			case itemTypeIssue:
+				cf = IssueContentFragment{}
+			case itemTypePullRequest:
+				cf = PullRequestContentFragment{}
+			}
+			query := generateFilledTestUpvoteQuery(testcase, cf)
+
+			if got := query.ProjectItemType(); got != testcase {
+				t.Errorf("got: %v, want: %v", got, testcase)
+			}
+		})
+	}
+}
+
+func TestSkip(t *testing.T) {
+	testcases := []struct {
+		name     string
+		itemType string
+		archived bool
+		closed   bool
+		want     bool
+	}{
+		{"IssueNoSkip", itemTypeIssue, false, false, false},
+		{"IssueSkipArchived", itemTypeIssue, true, false, true},
+		{"IssueSkipClosed", itemTypeIssue, false, true, true},
+		{"PullRequestNoSkip", itemTypePullRequest, false, false, false},
+		{"PullRequestSkipArchived", itemTypePullRequest, true, false, true},
+		{"PullRequestSkipClosed", itemTypePullRequest, false, true, true},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			c := CommonContentFragment{
+				Closed: testcase.closed,
+			}
+
+			var cf contentFragment
+			switch testcase.itemType {
+			case itemTypeIssue:
+				cf = IssueContentFragment{
+					CommonContentFragment: c,
+				}
+			case itemTypePullRequest:
+				cf = PullRequestContentFragment{
+					CommonContentFragment: c,
+				}
+			}
+
+			q := generateFilledTestUpvoteQuery(testcase.itemType, cf)
+			q.Organization.Project.ProjectItems.Nodes[0].IsArchived = testcase.archived
+
+			if got := q.Skip(); got != testcase.want {
+				t.Errorf("got: %v, want: %v", got, testcase.want)
+			}
+		})
+	}
+}
+
+func TestProjectItemCommentsCount(t *testing.T) {
 	for _, testcase := range itemTypeTestCases {
 		t.Run(testcase, func(t *testing.T) {
 
@@ -52,7 +116,7 @@ func TestProjectItemCommentCount(t *testing.T) {
 
 			q := generateFilledTestUpvoteQuery(testcase, cf)
 
-			if got := q.ProjectItemCommentCount(); got != 5 {
+			if got := q.ProjectItemCommentsCount(); got != 5 {
 				t.Errorf("got: %v, want: 5", got)
 			}
 		})
@@ -108,7 +172,7 @@ func TestProjectItemConnectionsUpvotes(t *testing.T) {
 	}
 }
 
-func TestProjectItemConnectionCursors(t *testing.T) {
+func TestProjectItemConnectionsCursors(t *testing.T) {
 	testcases := []struct {
 		itemType string
 		want     map[string]string
@@ -146,7 +210,7 @@ func TestProjectItemConnectionCursors(t *testing.T) {
 
 			q := generateFilledTestUpvoteQuery(testcase.itemType, cf)
 
-			if got := q.ProjectItemConnectionCursors(); !reflect.DeepEqual(got, testcase.want) {
+			if got := q.ProjectItemConnectionsCursors(); !reflect.DeepEqual(got, testcase.want) {
 				t.Errorf("got: %v, want: %v", got, testcase.want)
 			}
 		})
