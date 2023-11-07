@@ -5,42 +5,15 @@ import "github.com/shurcooL/githubv4"
 type UpvoteQuery struct {
 	Organization struct {
 		Project struct {
-			Id    githubv4.String
-			Field struct {
-				FieldFragment `graphql:"...on ProjectV2Field"`
-			} `graphql:"field(name: $fieldName)"`
-			ProjectItems ProjectItems `graphql:"items(first: 1, after: $projectItemsCursor)"`
+			ProjectItems ProjectItems `graphql:"items(first: 50, after: $projectItemsCursor)"`
 		} `graphql:"projectV2(number: $project)"`
 	} `graphql:"organization(login: $org)"`
-	RateLimit struct {
-		Remaining int `graphql:"remaining"`
-		Cost      int `graphql:"cost"`
-	} `graphql:"rateLimit"`
+	RateLimit RateLimit `graphql:"rateLimit"`
 }
 
-type FieldFragment struct {
-	Id githubv4.String
-}
-
-// Skip returns true if the current project item should be skipped when calculating upvotes
-func (u UpvoteQuery) Skip() bool {
-	pi := u.Organization.Project.ProjectItems.Nodes[0]
-
-	return pi.IsArchived || pi.Content.isClosed() || pi.Content.Type == "DraftIssue"
-}
-
-// GetProjectItemId returns the ID current project item
-func (u UpvoteQuery) GetProjectItemId() githubv4.String {
-	return u.Organization.Project.ProjectItems.Nodes[0].Id
-}
-
-// GetContent returns the ContentFragment for the Issue or Pull Request
-func (u UpvoteQuery) GetContent() ContentFragment {
-	c := u.Organization.Project.ProjectItems.Nodes[0].Content
-	if c.Type == "Issue" {
-		return c.Issue
-	}
-	return c.PullRequest
+type RateLimit struct {
+	Remaining int `graphql:"remaining"`
+	Cost      int `graphql:"cost"`
 }
 
 // Fragment for pagination information
@@ -52,7 +25,12 @@ type PageInfo struct {
 // ProjectItems represents information about the project items in a project
 type ProjectItems struct {
 	PageInfo PageInfo
-	Nodes    []ProjectItem
+	Edges    []ProjectItemEdge
+}
+
+type ProjectItemEdge struct {
+	Cursor githubv4.String
+	Node   ProjectItem
 }
 
 // ProjectItem represents an individual item in a Project
@@ -61,12 +39,28 @@ type ProjectItem struct {
 	IsArchived bool
 	Type       string
 	Field      struct {
-		Value struct {
-			Id     githubv4.String
-			Number float64 `graphql:"number"`
-		} `graphql:"... on ProjectV2ItemFieldNumberValue"`
+		NumberValue `graphql:"... on ProjectV2ItemFieldNumberValue"`
 	} `graphql:"fieldValueByName(name: $fieldName)"`
 	Content Content `graphql:"content"`
+}
+
+// Represents the value of a Number type custom field in a Project. In an Upvote query,
+// this is populated with the current number of upvotes, for use in diffing
+type NumberValue struct {
+	Number float64 `graphql:"number"`
+}
+
+// GetContent returns the content of the Project Item
+func (p ProjectItem) GetContent() ContentFragment {
+	if p.Type == "Issue" {
+		return p.Content.Issue
+	}
+	return p.Content.PullRequest
+}
+
+// Skip returns true if the current project item should be skipped when calculating upvotes
+func (p ProjectItem) Skip() bool {
+	return p.IsArchived || p.Content.isClosed() || p.Content.Type == "DraftIssue"
 }
 
 // Content is the actual Issue or Pull Request connected to a Project Item
@@ -84,35 +78,20 @@ func (c Content) isClosed() bool {
 	return c.PullRequest.Closed
 }
 
-// Upvotes returns the total upvotes for the Issue or Pull Request tied to the Project Item
-func (c Content) Upvotes() int {
-	if c.Type == "Issue" {
-		return c.Issue.Upvotes()
-	}
-	return c.PullRequest.Upvotes()
-}
-
-// GetContent returns the ContentFragment for the Issue or Pull Request
-func (c Content) GetContent() ContentFragment {
-	if c.Type == "Issue" {
-		return c.Issue
-	}
-	return c.PullRequest
-}
-
 // Common content fragment used for issues or pull request items
 type ContentFragment struct {
+	Id     githubv4.String
 	Closed bool `graphql:"closed"`
 	BaseFragment
 
 	TimelineItems struct {
 		PageInfo PageInfo
 		Nodes    []TimeLineItem
-	} `graphql:"timelineItems(first: 100, after: $timelineItemsCursor, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT, ISSUE_COMMENT, MARKED_AS_DUPLICATE_EVENT, REFERENCED_EVENT, SUBSCRIBED_EVENT])"`
+	} `graphql:"timelineItems(first: 100, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT, ISSUE_COMMENT, MARKED_AS_DUPLICATE_EVENT, REFERENCED_EVENT, SUBSCRIBED_EVENT])"`
 }
 
 // Upvotes returns the total upvotes for the Issue or Pull Request
-func (c ContentFragment) Upvotes() int {
+func (c ContentFragment) timelineItemsUpvotes() int {
 	var upvotes int
 	for _, t := range c.TimelineItems.Nodes {
 		upvotes += t.Upvotes()
@@ -155,7 +134,6 @@ type TotalCountFragment struct {
 
 // BaseFragment is used to add common fields to larger parts of the query
 type BaseFragment struct {
-	Number    int                `graphql:"number"` // TODO: Revisit utility of this
 	Comments  TotalCountFragment `graphql:"comments"`
 	Reactions TotalCountFragment `graphql:"reactions"`
 }
@@ -184,7 +162,6 @@ func (c CombinedBaseFragment) CombinedBaseUpvotes() int {
 
 // Represents events when an issue or pull request was connected to the item
 type ConnectedEvent struct {
-	IsCrossRepository    bool `graphql:"isCrossRepository"` // TODO: Revisit utility of this
 	CombinedBaseFragment `graphql:"source"`
 }
 
@@ -198,12 +175,20 @@ type CrossReferencedEvent struct {
 
 // Represents an event of someone commenting on the item
 type IssueComment struct {
-	AuthorAssociation string             `graphql:"authorAssociation"` // TODO: Revisit utility of this
-	Reactions         TotalCountFragment `graphql:"reactions"`
+	Reactions TotalCountFragment `graphql:"reactions"`
 }
 
 // Represents the item being marked as a duplicate of the canonical item
 type MarkedAsDuplicateEvent struct {
-	IsCrossRepository    bool `graphql:"isCrossRepository"` // TODO: Revisit utility of this
 	CombinedBaseFragment `graphql:"canonical"`
+}
+
+// TODO: Organize this better, below here is for paginating additional timeline items
+
+// Common content fragment used for issues or pull request items
+type TimelineItemQueryContentFragment struct {
+	TimelineItems struct {
+		PageInfo PageInfo
+		Nodes    []TimeLineItem
+	} `graphql:"timelineItems(first: 100, after: $cursor, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT, ISSUE_COMMENT, MARKED_AS_DUPLICATE_EVENT, REFERENCED_EVENT, SUBSCRIBED_EVENT])"`
 }
