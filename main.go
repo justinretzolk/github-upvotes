@@ -30,6 +30,19 @@ func validateEnv() error {
 func main() {
 	defer timer(time.Now())()
 
+	// Enable Debug Logging
+	// The existence of these env vars is enough to trigger debug in Actions, so will here too
+	_, runnerDebug := os.LookupEnv("RUNNER_DEBUG")
+	_, stepDebug := os.LookupEnv("STEP_DEBUG")
+	if runnerDebug || stepDebug {
+		opts := &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		}
+
+		logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+		slog.SetDefault(logger)
+	}
+
 	if err := validateEnv(); err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)

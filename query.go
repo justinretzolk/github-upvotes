@@ -5,7 +5,7 @@ import "github.com/shurcooL/githubv4"
 type UpvoteQuery struct {
 	Organization struct {
 		Project struct {
-			ProjectItems ProjectItems `graphql:"items(first: 100, after: $projectItemsCursor)"`
+			ProjectItems ProjectItems `graphql:"items(first: 50, after: $projectItemsCursor)"`
 		} `graphql:"projectV2(number: $project)"`
 	} `graphql:"organization(login: $org)"`
 	RateLimit RateLimit `graphql:"rateLimit"`
