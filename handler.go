@@ -22,6 +22,8 @@ type Calculator struct {
 	fieldId            githubv4.String
 	cursor             githubv4.String
 	rateLimitRemaining int
+
+	queue chan updateProjectItemInput
 }
 
 // NewCalculator returns a new calculator. Required variables are loaded directly from
@@ -50,6 +52,9 @@ func NewCalculator(ctx context.Context) (*Calculator, error) {
 	if err = c.getAdditionalProjectData(ctx); err != nil {
 		return c, err
 	}
+
+	// Create the channel for the update queue
+	c.queue = make(chan updateProjectItemInput)
 
 	// Optionally populate the cursor
 	if cursor, ok := os.LookupEnv("CURSOR"); ok {
@@ -117,7 +122,9 @@ func (c *Calculator) UpdateUpvotes(ctx context.Context) error {
 	// Metrics around GraphQL rate limit usage
 	defer c.calculateUpvotesMetrics(c.rateLimitRemaining)()
 
-	// Query data
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var q UpvoteQuery
 	vars := map[string]interface{}{
 		"org":                c.org,
@@ -126,16 +133,10 @@ func (c *Calculator) UpdateUpvotes(ctx context.Context) error {
 		"projectItemsCursor": &c.cursor,
 	}
 
-	childCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	updateQueue := make(chan updateProjectItemInput)
-	defer close(updateQueue)
-
 	errChan := make(chan error)
 
 	// Start the project item update service
-	go c.projectItemUpdateService(childCtx, updateQueue, errChan)
+	go c.projectItemUpdateService(childCtx, errChan)
 
 	for {
 		select {
@@ -165,7 +166,7 @@ func (c *Calculator) UpdateUpvotes(ctx context.Context) error {
 			pi := q.Organization.Project.ProjectItems
 			slog.Debug("upvote query executed", "end_cursor", pi.PageInfo.EndCursor, "cost", q.RateLimit.Cost, "remaining", c.rateLimitRemaining)
 
-			if err := c.processProjectItems(childCtx, updateQueue, pi.Edges); err != nil {
+			if err := c.processProjectItems(childCtx, pi.Edges); err != nil {
 				return err
 			}
 
@@ -179,7 +180,7 @@ func (c *Calculator) UpdateUpvotes(ctx context.Context) error {
 
 // processProjectItems takes a Context and slice of ProjectItemEdge, and processes each ProjectItemEdge
 // until it's been updated. An error is returned if one is received during processing.
-func (c *Calculator) processProjectItems(ctx context.Context, queue chan updateProjectItemInput, items []ProjectItemEdge) error {
+func (c *Calculator) processProjectItems(ctx context.Context, items []ProjectItemEdge) error {
 
 	childCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -189,25 +190,26 @@ func (c *Calculator) processProjectItems(ctx context.Context, queue chan updateP
 		wg.Add(1)
 		go func(e ProjectItemEdge) {
 			defer wg.Done()
-			if err := c.processProjectItem(childCtx, queue, e); err != nil {
-				cancel(err)
+
+			select {
+			case <-childCtx.Done():
 				return
+			default:
+				if err := c.processProjectItem(childCtx, e); err != nil {
+					cancel(err)
+				}
 			}
 		}(item)
-
-		if childCtx.Err() != nil {
-			return context.Cause(childCtx)
-		}
 	}
 	wg.Wait()
 
-	return nil
+	return context.Cause(childCtx)
 }
 
 // calculateProjectItemUpvotes calculates the upvotes for a given project item, including paging
 // through any additional pages of TimelineItems, then sends the information to update the project item
 // to the queue channel. It returns an error if one is received.
-func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- updateProjectItemInput, p ProjectItemEdge) error {
+func (c *Calculator) processProjectItem(ctx context.Context, p ProjectItemEdge) error {
 	var upvotes int
 	node := p.Node
 
@@ -232,7 +234,7 @@ func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- update
 		upvotes += additionalUpvotes
 	}
 
-	queue <- updateProjectItemInput{
+	c.queue <- updateProjectItemInput{
 		item:    p,
 		upvotes: upvotes,
 	}
@@ -245,6 +247,8 @@ func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- update
 // for the TimelineItems page. It returns an int representing the number of upvotes calculates from the
 // remaining timeline items.
 func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cursor githubv4.String) (int, error) {
+
+	var upvotes int
 
 	var q struct {
 		Node struct {
@@ -260,8 +264,6 @@ func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cur
 		"cursor": cursor,
 	}
 
-	var upvotes int
-
 	for {
 		slog.Debug("getting additional timeline items", "node_id", nodeId, "timeline_items_cursor", cursor)
 		err := c.client.Query(ctx, &q, vars)
@@ -270,10 +272,9 @@ func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cur
 		}
 
 		var content ContentFragment
-		switch q.Node.Type {
-		case githubv4.String("Issue"):
+		if q.Node.Type == githubv4.String("Issue") {
 			content = q.Node.Issue
-		case githubv4.String("PullRequest"):
+		} else {
 			content = q.Node.PullRequest
 		}
 
@@ -292,34 +293,39 @@ func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cur
 
 // projectItemUpdateService receives requests and updates project items. It returns an error to the error
 // channel if one is received.
-func (c *Calculator) projectItemUpdateService(ctx context.Context, rcvr <-chan updateProjectItemInput, errChan chan<- error) {
-	for rcvd := range rcvr {
-		slog.Info("updating project item upvote count", "item_id", rcvd.item.Node.Id, "upvotes", rcvd.upvotes)
-
-		var mutation struct {
-			UpdateProjectItemV2FieldValue struct {
-				ClientMutationId string
-			} `graphql:"updateProjectV2ItemFieldValue(input: $input)"`
-		}
-
-		input := githubv4.UpdateProjectV2ItemFieldValueInput{
-			ProjectID: c.projectId,
-			ItemID:    rcvd.item.Node.Id,
-			FieldID:   c.fieldId,
-			Value: githubv4.ProjectV2FieldValue{
-				Number: githubv4.NewFloat(githubv4.Float(rcvd.upvotes)),
-			},
-		}
-
-		if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
-			errChan <- err
+func (c *Calculator) projectItemUpdateService(ctx context.Context, errChan chan<- error) {
+	for rcvd := range c.queue {
+		select {
+		case <-ctx.Done():
 			return
+		default:
+			slog.Info("updating project item upvote count", "item_id", rcvd.item.Node.Id, "upvotes", rcvd.upvotes)
+
+			var mutation struct {
+				UpdateProjectItemV2FieldValue struct {
+					ClientMutationId string
+				} `graphql:"updateProjectV2ItemFieldValue(input: $input)"`
+			}
+
+			input := githubv4.UpdateProjectV2ItemFieldValueInput{
+				ProjectID: c.projectId,
+				ItemID:    rcvd.item.Node.Id,
+				FieldID:   c.fieldId,
+				Value: githubv4.ProjectV2FieldValue{
+					Number: githubv4.NewFloat(githubv4.Float(rcvd.upvotes)),
+				},
+			}
+
+			if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
+				errChan <- err
+				return
+			}
+
+			c.cursor = rcvd.item.Cursor
+
+			// https://docs.github.com/en/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api#staying-under-the-rate-limit
+			time.Sleep(500 * time.Millisecond)
 		}
-
-		c.cursor = rcvd.item.Cursor
-
-		// https://docs.github.com/en/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api#staying-under-the-rate-limit
-		time.Sleep(500 * time.Millisecond)
 	}
 }
 
