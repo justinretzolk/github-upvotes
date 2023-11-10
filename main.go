@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -48,14 +49,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	c, err := NewCalculator()
+	ctx := context.Background()
+	c, err := NewCalculator(ctx)
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
 	defer output(&c.cursor)()
 
-	err = c.CalculateUpvotes()
+	err = c.UpdateUpvotes(ctx)
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
