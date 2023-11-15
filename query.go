@@ -23,13 +23,13 @@ func Upvotes(u ...Upvotable) int {
 // https://github.com/shurcooL/githubv4#inline-fragments
 type ProjectItemsQuery struct {
 	Organization `graphql:"organization(login: $org)"`
-	RateLimit    RateLimit `graphql:"rateLimit"`
+	RateLimit    RateLimit
 }
 
 // RateLimit represents information related to the GitHub GraphQL rate limit
 type RateLimit struct {
-	Remaining int `graphql:"remaining"`
-	Cost      int `graphql:"cost"`
+	Remaining int
+	Cost      int
 }
 
 // Organization is a fragment to be embedded
@@ -50,8 +50,8 @@ type ProjectItems struct {
 
 // PageInfo represents pagingation information returned by GitHub's GraphQL API
 type PageInfo struct {
-	EndCursor   githubv4.String `graphql:"endCursor"`
-	HasNextPage bool            `graphql:"hasNextPage"`
+	EndCursor   githubv4.String
+	HasNextPage bool
 }
 
 // ProjectItemEdge represents the connection between the project and an individual project item.
@@ -69,12 +69,12 @@ type ProjectItem struct {
 	Field      struct {
 		NumberValue `graphql:"... on ProjectV2ItemFieldNumberValue"`
 	} `graphql:"fieldValueByName(name: $fieldName)"`
-	Content Content `graphql:"content"`
+	Content Content
 }
 
 // Represents the value of a Number type custom field in a Project.
 type NumberValue struct {
-	Number float64 `graphql:"number"`
+	Number float64
 }
 
 // GetContent returns the content of the Project Item
@@ -102,37 +102,39 @@ type Content struct {
 	PullRequest ContentFragment `graphql:"...on PullRequest"`
 }
 
+// Upvotes returns the result of Upvotes() for either c.Issue or c.PullRequest
+// depending on the type of the content.
 func (c Content) Upvotes() int {
-	var x int
+	var content ContentFragment
 	switch c.Type {
 	case "Issue":
-		x += c.Issue.Upvotes()
+		content = c.Issue
 	case "PullRequest":
-		x += c.PullRequest.Upvotes()
+		content = c.PullRequest
 	}
 
-	return x
+	return content.upvotes()
 }
 
-// isClosed returns true if the Issue or Pull Request is closed
+// isClosed returns the value of the Closed field for either c.Issue or c.PullRequest
+// depending on the type of the content.
 func (c Content) isClosed() bool {
-	var x bool
-
+	var content ContentFragment
 	switch c.Type {
 	case "Issue":
-		x = c.Issue.Closed
+		content = c.Issue
 	case "PullRequest":
-		x = c.PullRequest.Closed
+		content = c.PullRequest
 	}
 
-	return x
+	return content.Closed
 }
 
-// Common content fragment used for issues or pull request items
+// Common content fragment represents an Issue or Pull Request.
 type ContentFragment struct {
-	Id     githubv4.String
-	Closed bool `graphql:"closed"`
 	BaseFragment
+	Id     githubv4.String
+	Closed bool
 
 	TimelineItems struct {
 		PageInfo PageInfo
@@ -141,40 +143,40 @@ type ContentFragment struct {
 }
 
 // Upvotes returns the total upvotes for the Issue or Pull Request
-func (c ContentFragment) Upvotes() int {
-	x := []Upvotable{
-		c.BaseFragment,
+func (c ContentFragment) upvotes() int {
+	upvotes := c.baseUpvotes()
+
+	for _, node := range c.TimelineItems.Nodes {
+		upvotes += node.upvotes()
 	}
 
-	for _, y := range c.TimelineItems.Nodes {
-		x = append(x, y)
-	}
-
-	return Upvotes(x...)
+	return upvotes
 }
 
+// TimeLineItem respresents an individual timeline item -- an event in the Issue or Pull
+// Request's history.
 type TimeLineItem struct {
-	Type                   githubv4.String        `graphql:"__typename"`
-	ConnectedEvent         ConnectedEvent         `graphql:"...on ConnectedEvent"`
-	CrossReferencedEvent   CrossReferencedEvent   `graphql:"...on CrossReferencedEvent"`
-	IssueComment           IssueComment           `graphql:"...on IssueComment"`
-	MarkedAsDuplicateEvent MarkedAsDuplicateEvent `graphql:"...on MarkedAsDuplicateEvent"`
+	Type                   githubv4.String                 `graphql:"__typename"`
+	ConnectedEvent         ConnectedOrCrossReferencedEvent `graphql:"...on ConnectedEvent"`
+	CrossReferencedEvent   ConnectedOrCrossReferencedEvent `graphql:"...on CrossReferencedEvent"`
+	IssueComment           IssueComment                    `graphql:"...on IssueComment"`
+	MarkedAsDuplicateEvent MarkedAsDuplicateEvent          `graphql:"...on MarkedAsDuplicateEvent"`
 }
 
 // Upvotes returns the total upvotes for the given timeline item
-func (t TimeLineItem) Upvotes() int {
+func (t TimeLineItem) upvotes() int {
 	// the fact that the timeline item exists means that the minimum upvotes is 1
 	upvotes := 1
 
 	switch t.Type {
 	case "ConnectedEvent":
-		upvotes += t.ConnectedEvent.Upvotes()
+		upvotes += t.ConnectedEvent.upvotes()
 	case "CrossReferencedEvent":
-		upvotes += t.CrossReferencedEvent.Upvotes()
+		upvotes += t.CrossReferencedEvent.upvotes()
 	case "IssueComment":
 		upvotes += t.IssueComment.Reactions.TotalCount
 	case "MarkedAsDuplicateEvent":
-		upvotes += t.MarkedAsDuplicateEvent.Upvotes()
+		upvotes += t.MarkedAsDuplicateEvent.upvotes()
 	}
 
 	return upvotes
@@ -182,19 +184,19 @@ func (t TimeLineItem) Upvotes() int {
 
 // BaseFragment is embedded to add common fields to Issues / Pull Requests
 type BaseFragment struct {
-	Comments  TotalCountFragment `graphql:"comments"`
-	Reactions TotalCountFragment `graphql:"reactions"`
+	Comments  TotalCountFragment
+	Reactions TotalCountFragment
 }
 
 // TotalCountFragment is used as a general purpose fragment when the only needed information is
 // the total count of connections.
 type TotalCountFragment struct {
-	TotalCount int `graphql:"totalCount"`
+	TotalCount int
 }
 
-// Upvotes returns the number of upvotes from the fields provided by the BaseFragment:
+// BaseUpvotes returns the number of upvotes from the fields provided by the BaseFragment:
 // The total number of comments on the item, and the total number of reactions to the item.
-func (b BaseFragment) Upvotes() int {
+func (b BaseFragment) baseUpvotes() int {
 	return b.Comments.TotalCount + b.Reactions.TotalCount
 }
 
@@ -206,36 +208,30 @@ type CombinedBaseFragment struct {
 	PullRequest BaseFragment `graphql:"...on PullRequest"`
 }
 
-// Upvotes returns the upvotes for a CombinedBaseFragment
-func (c CombinedBaseFragment) Upvotes() int {
-	var x int
+// upvotes returns the result of baseUpvotes() for the Issue or Pull Request in c,
+// depending on c.Type.
+func (c CombinedBaseFragment) upvotes() int {
+	var base BaseFragment
 
 	switch c.Type {
 	case "Issue":
-		x = c.Issue.Upvotes()
+		base = c.Issue
 	case "PullRequest":
-		x = c.PullRequest.Upvotes()
+		base = c.PullRequest
 	}
 
-	return x
+	return base.baseUpvotes()
 }
 
-// Represents events when an issue or pull request was connected to the item
-type ConnectedEvent struct {
+// Represents events when an issue or pull request was connected to, or cross-referenced
+// the item.
+type ConnectedOrCrossReferencedEvent struct {
 	CombinedBaseFragment `graphql:"source"`
-}
-
-// Represents the item being cross referenced by another issue or pull request. Has almost identical
-// fields to ConnectedEvent, with the addition of an indication of whether the target will be closed
-// by the source.
-type CrossReferencedEvent struct {
-	ConnectedEvent
-	WillCloseTarget bool `graphql:"willCloseTarget"`
 }
 
 // Represents an event of someone commenting on the item
 type IssueComment struct {
-	Reactions TotalCountFragment `graphql:"reactions"`
+	Reactions TotalCountFragment
 }
 
 // Represents the item being marked as a duplicate of the canonical item
