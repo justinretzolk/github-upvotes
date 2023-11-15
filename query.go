@@ -2,10 +2,24 @@ package main
 
 import "github.com/shurcooL/githubv4"
 
+type Upvotable interface {
+	Upvotes() int
+}
+
+func Upvotes(u ...Upvotable) int {
+	var upvotes int
+
+	for _, x := range u {
+		upvotes += x.Upvotes()
+	}
+
+	return upvotes
+}
+
 type UpvoteQuery struct {
 	Organization struct {
 		Project struct {
-			ProjectItems ProjectItems `graphql:"items(first: 50, after: $projectItemsCursor)"`
+			ProjectItems ProjectItems `graphql:"items(first: 80, after: $projectItemsCursor)"`
 		} `graphql:"projectV2(number: $project)"`
 	} `graphql:"organization(login: $org)"`
 	RateLimit RateLimit `graphql:"rateLimit"`
@@ -52,10 +66,15 @@ type NumberValue struct {
 
 // GetContent returns the content of the Project Item
 func (p ProjectItem) GetContent() ContentFragment {
-	if p.Type == "Issue" {
-		return p.Content.Issue
+	var x ContentFragment
+	switch p.Type {
+	case "Issue":
+		x = p.Content.Issue
+	default:
+		x = p.Content.PullRequest
 	}
-	return p.Content.PullRequest
+
+	return x
 }
 
 // Skip returns true if the current project item should be skipped when calculating upvotes
@@ -70,12 +89,30 @@ type Content struct {
 	PullRequest ContentFragment `graphql:"...on PullRequest"`
 }
 
+func (c Content) Upvotes() int {
+	var x int
+	switch c.Type {
+	case "Issue":
+		x += c.Issue.Upvotes()
+	case "PullRequest":
+		x += c.PullRequest.Upvotes()
+	}
+
+	return x
+}
+
 // isClosed returns true if the Issue or Pull Request is closed
 func (c Content) isClosed() bool {
-	if c.Type == "Issue" {
-		return c.Issue.Closed
+	var x bool
+
+	switch c.Type {
+	case "Issue":
+		x = c.Issue.Closed
+	case "PullRequest":
+		x = c.PullRequest.Closed
 	}
-	return c.PullRequest.Closed
+
+	return x
 }
 
 // Common content fragment used for issues or pull request items
@@ -91,12 +128,16 @@ type ContentFragment struct {
 }
 
 // Upvotes returns the total upvotes for the Issue or Pull Request
-func (c ContentFragment) timelineItemsUpvotes() int {
-	var upvotes int
-	for _, t := range c.TimelineItems.Nodes {
-		upvotes += t.Upvotes()
+func (c ContentFragment) Upvotes() int {
+	x := []Upvotable{
+		c.BaseFragment,
 	}
-	return upvotes
+
+	for _, y := range c.TimelineItems.Nodes {
+		x = append(x, y)
+	}
+
+	return Upvotes(x...)
 }
 
 type TimeLineItem struct {
@@ -114,13 +155,13 @@ func (t TimeLineItem) Upvotes() int {
 
 	switch t.Type {
 	case "ConnectedEvent":
-		upvotes = upvotes + t.ConnectedEvent.CombinedBaseUpvotes()
+		upvotes += t.ConnectedEvent.Upvotes()
 	case "CrossReferencedEvent":
-		upvotes = upvotes + t.CrossReferencedEvent.CombinedBaseUpvotes()
+		upvotes += t.CrossReferencedEvent.Upvotes()
 	case "IssueComment":
-		upvotes = upvotes + t.IssueComment.Reactions.TotalCount
+		upvotes += t.IssueComment.Reactions.TotalCount
 	case "MarkedAsDuplicateEvent":
-		upvotes = upvotes + t.MarkedAsDuplicateEvent.CombinedBaseUpvotes()
+		upvotes += t.MarkedAsDuplicateEvent.Upvotes()
 	}
 
 	return upvotes
@@ -138,9 +179,9 @@ type BaseFragment struct {
 	Reactions TotalCountFragment `graphql:"reactions"`
 }
 
-// BaseUpvotes returns the number of upvotes from the fields provided by the BaseFragment:
+// Upvotes returns the number of upvotes from the fields provided by the BaseFragment:
 // The total number of comments on the item, and the total number of reactions to the item.
-func (b BaseFragment) BaseUpvotes() int {
+func (b BaseFragment) Upvotes() int {
 	return b.Comments.TotalCount + b.Reactions.TotalCount
 }
 
@@ -152,12 +193,18 @@ type CombinedBaseFragment struct {
 	PullRequest BaseFragment `graphql:"...on PullRequest"`
 }
 
-// CombinedBaseUpvotes returns the upvotes for a CombinedBaseFragment
-func (c CombinedBaseFragment) CombinedBaseUpvotes() int {
-	if c.Type == "Issue" {
-		return c.Issue.BaseUpvotes()
+// Upvotes returns the upvotes for a CombinedBaseFragment
+func (c CombinedBaseFragment) Upvotes() int {
+	var x int
+
+	switch c.Type {
+	case "Issue":
+		x = c.Issue.Upvotes()
+	case "PullRequest":
+		x = c.PullRequest.Upvotes()
 	}
-	return c.PullRequest.BaseUpvotes()
+
+	return x
 }
 
 // Represents events when an issue or pull request was connected to the item

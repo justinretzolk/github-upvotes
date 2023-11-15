@@ -23,8 +23,7 @@ type Calculator struct {
 	cursor             githubv4.String
 	rateLimitRemaining int
 
-	queue chan updateProjectItemInput
-	err   chan error
+	err chan error
 }
 
 // NewCalculator returns a new calculator. Required variables are loaded directly from
@@ -54,8 +53,6 @@ func NewCalculator(ctx context.Context) (*Calculator, error) {
 		return c, err
 	}
 
-	// Create the channels for the update queue and errors
-	c.queue = make(chan updateProjectItemInput)
 	c.err = make(chan error)
 
 	// Optionally populate the cursor
@@ -127,12 +124,12 @@ func (c *Calculator) UpdateUpvotes(ctx context.Context) error {
 	childCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Start the project item query service
-	go c.projectItemQueryService(childCtx)
-
 	// Start the project item update service, passing it the trigger to end the loop
 	exitTrigger := make(chan struct{})
-	go c.projectItemUpdateService(childCtx, exitTrigger)
+	queue := c.projectItemUpdateService(childCtx, exitTrigger)
+
+	// Start the project item query service
+	go c.projectItemQueryService(childCtx, queue)
 
 	for {
 		select {
@@ -148,9 +145,9 @@ func (c *Calculator) UpdateUpvotes(ctx context.Context) error {
 	}
 }
 
-func (c *Calculator) projectItemQueryService(ctx context.Context) {
+func (c *Calculator) projectItemQueryService(ctx context.Context, queue chan<- updateProjectItemInput) {
 
-	defer close(c.queue)
+	defer close(queue)
 
 	var q UpvoteQuery
 	vars := map[string]interface{}{
@@ -168,9 +165,9 @@ pageloop:
 		default:
 			// Stop processing additional pages of project items if the reamining API credits are less than
 			// twice the length of the current queue. Each update costs 1 API credit, so this should leave
-			// plenty of bufffer for enqueued items to finish up.Breaking here allows the already-retrieved
+			// plenty of bufffer for enqueued items to finish up. Breaking here allows the already-retrieved
 			// items to process before returning
-			if c.rateLimitRemaining < (2 * len(c.queue)) {
+			if c.rateLimitRemaining < (2 * len(queue)) {
 				slog.Debug("nearing rate limit, no further project item pages will be queried")
 				break pageloop
 			}
@@ -186,7 +183,7 @@ pageloop:
 			// Update rate limit information
 			c.setRateLimitData(q.RateLimit.Remaining)
 
-			if err := c.processProjectItems(ctx, pi.Edges); err != nil {
+			if err := c.processProjectItems(ctx, queue, pi.Edges); err != nil {
 				c.err <- err
 				return
 			}
@@ -202,7 +199,7 @@ pageloop:
 
 // processProjectItems takes a Context and slice of ProjectItemEdge, and processes each ProjectItemEdge
 // until it's been updated. An error is returned if one is received during processing.
-func (c *Calculator) processProjectItems(ctx context.Context, items []ProjectItemEdge) error {
+func (c *Calculator) processProjectItems(ctx context.Context, queue chan<- updateProjectItemInput, items []ProjectItemEdge) error {
 
 	childCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -217,7 +214,7 @@ func (c *Calculator) processProjectItems(ctx context.Context, items []ProjectIte
 			case <-childCtx.Done():
 				return
 			default:
-				if err := c.processProjectItem(childCtx, e); err != nil {
+				if err := c.processProjectItem(childCtx, queue, e); err != nil {
 					cancel(err)
 				}
 			}
@@ -231,7 +228,7 @@ func (c *Calculator) processProjectItems(ctx context.Context, items []ProjectIte
 // calculateProjectItemUpvotes calculates the upvotes for a given project item, including paging
 // through any additional pages of TimelineItems, then sends the information to update the project item
 // to the queue channel. It returns an error if one is received.
-func (c *Calculator) processProjectItem(ctx context.Context, p ProjectItemEdge) error {
+func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- updateProjectItemInput, p ProjectItemEdge) error {
 	var upvotes int
 	node := p.Node
 
@@ -240,15 +237,14 @@ func (c *Calculator) processProjectItem(ctx context.Context, p ProjectItemEdge) 
 
 		// The cursor *should* be incremented here, but realistically, these process way faster
 		// than the ones that actually need to be updated, so for now, skipped items don't update the cursor.
-		// Maybe this can be revisted later to learn about ordering things.
+		// Maybe this can be revisted later.
 		// c.cursor = p.Cursor
 		return nil
 	}
 
 	slog.Debug("calculating upvotes for project item id", "item_id", node.Id, "cursor", p.Cursor)
 	content := node.GetContent()
-	upvotes += content.BaseUpvotes()
-	upvotes += content.timelineItemsUpvotes()
+	upvotes += content.Upvotes()
 
 	if content.TimelineItems.PageInfo.HasNextPage {
 		slog.Debug("project item has additional timeline items", "item_id", node.Id)
@@ -260,7 +256,7 @@ func (c *Calculator) processProjectItem(ctx context.Context, p ProjectItemEdge) 
 		upvotes += additionalUpvotes
 	}
 
-	c.queue <- updateProjectItemInput{
+	queue <- updateProjectItemInput{
 		item:    p,
 		upvotes: upvotes,
 	}
@@ -304,7 +300,7 @@ func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cur
 			content = q.Node.PullRequest
 		}
 
-		upvotes += content.timelineItemsUpvotes()
+		upvotes += content.Upvotes()
 		c.setRateLimitData(q.RateLimit.Remaining)
 
 		if !content.TimelineItems.PageInfo.HasNextPage {
@@ -319,47 +315,50 @@ func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cur
 
 // projectItemUpdateService receives requests and updates project items. It returns an error to the error
 // channel if one is received.
-func (c *Calculator) projectItemUpdateService(ctx context.Context, exitTrigger chan struct{}) {
-	for rcvd := range c.queue {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			slog.Info("updating project item upvote count", "item_id", rcvd.item.Node.Id, "upvotes", rcvd.upvotes)
+func (c *Calculator) projectItemUpdateService(ctx context.Context, exitTrigger chan struct{}) chan<- updateProjectItemInput {
 
-			var mutation struct {
-				UpdateProjectItemV2FieldValue struct {
-					ClientMutationId string
-				} `graphql:"updateProjectV2ItemFieldValue(input: $input)"`
-			}
+	queue := make(chan updateProjectItemInput)
 
-			input := githubv4.UpdateProjectV2ItemFieldValueInput{
-				ProjectID: c.projectId,
-				ItemID:    rcvd.item.Node.Id,
-				FieldID:   c.fieldId,
-				Value: githubv4.ProjectV2FieldValue{
-					Number: githubv4.NewFloat(githubv4.Float(rcvd.upvotes)),
-				},
-			}
-
-			if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
-				c.err <- err
+	go func() {
+		for rcvd := range queue {
+			select {
+			case <-ctx.Done():
 				return
+			default:
+				slog.Info("updating project item upvote count", "item_id", rcvd.item.Node.Id, "upvotes", rcvd.upvotes)
+
+				var mutation struct {
+					UpdateProjectItemV2FieldValue struct {
+						ClientMutationId string
+					} `graphql:"updateProjectV2ItemFieldValue(input: $input)"`
+				}
+
+				input := githubv4.UpdateProjectV2ItemFieldValueInput{
+					ProjectID: c.projectId,
+					ItemID:    rcvd.item.Node.Id,
+					FieldID:   c.fieldId,
+					Value: githubv4.ProjectV2FieldValue{
+						Number: githubv4.NewFloat(githubv4.Float(rcvd.upvotes)),
+					},
+				}
+
+				if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
+					c.err <- err
+					return
+				}
+
+				c.cursor = rcvd.item.Cursor
+				c.rateLimitRemaining = c.rateLimitRemaining - 1 // mutations take 1 credit, but don't return that
+
+				// https://docs.github.com/en/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api#staying-under-the-rate-limit
+				time.Sleep(200 * time.Millisecond)
 			}
-
-			c.cursor = rcvd.item.Cursor
-			c.rateLimitRemaining = c.rateLimitRemaining - 1 // mutations take 1 credit, but don't return that
-
-			// https://docs.github.com/en/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api#staying-under-the-rate-limit
-			time.Sleep(200 * time.Millisecond)
 		}
-	}
 
-	// Opting to defer this would mean that it was trigger every time, even if an error was returned.
-	// Since select statements pick at random if multiple cases are ready, this could lead to the exitTrigger
-	// being accepted instead of the input from the error channel. Closing the exitTrigger channel only after
-	// all work is successfully completed avoids this.
-	close(exitTrigger)
+		close(exitTrigger)
+	}()
+
+	return queue
 }
 
 // Input type for updateProjectItem
