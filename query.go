@@ -16,35 +16,49 @@ func Upvotes(u ...Upvotable) int {
 	return upvotes
 }
 
-type UpvoteQuery struct {
-	Organization struct {
-		Project struct {
-			ProjectItems ProjectItems `graphql:"items(first: 80, after: $projectItemsCursor)"`
-		} `graphql:"projectV2(number: $project)"`
-	} `graphql:"organization(login: $org)"`
-	RateLimit RateLimit `graphql:"rateLimit"`
+// ProjectItemsQuery is used to retrieve a list of project items to be processed.
+// A series of embedded structs are used such that it has the fields of the ProjectItems
+// and RateLimit types. See the link below for additional details.
+//
+// https://github.com/shurcooL/githubv4#inline-fragments
+type ProjectItemsQuery struct {
+	Organization `graphql:"organization(login: $org)"`
+	RateLimit    RateLimit `graphql:"rateLimit"`
 }
 
+// RateLimit represents information related to the GitHub GraphQL rate limit
 type RateLimit struct {
 	Remaining int `graphql:"remaining"`
 	Cost      int `graphql:"cost"`
 }
 
-// Fragment for pagination information
-type PageInfo struct {
-	EndCursor   githubv4.String `graphql:"endCursor"`
-	HasNextPage bool            `graphql:"hasNextPage"`
+// Organization is a fragment to be embedded
+type Organization struct {
+	Project `graphql:"projectV2(number: $project)"`
 }
 
-// ProjectItems represents information about the project items in a project
+// Project is a fragment to be embedded
+type Project struct {
+	ProjectItems `graphql:"items(first: 80, after: $projectItemsCursor)"`
+}
+
+// ProjectItems contains paging information and a list of individual project items to be processed
 type ProjectItems struct {
 	PageInfo PageInfo
 	Edges    []ProjectItemEdge
 }
 
+// PageInfo represents pagingation information returned by GitHub's GraphQL API
+type PageInfo struct {
+	EndCursor   githubv4.String `graphql:"endCursor"`
+	HasNextPage bool            `graphql:"hasNextPage"`
+}
+
+// ProjectItemEdge represents the connection between the project and an individual project item.
+// It contains cursor information, and embeds ProjectItem, representing the node at the end of the edge.
 type ProjectItemEdge struct {
-	Cursor githubv4.String
-	Node   ProjectItem
+	Cursor      githubv4.String
+	ProjectItem `graphql:"node"`
 }
 
 // ProjectItem represents an individual item in a Project
@@ -58,8 +72,7 @@ type ProjectItem struct {
 	Content Content `graphql:"content"`
 }
 
-// Represents the value of a Number type custom field in a Project. In an Upvote query,
-// this is populated with the current number of upvotes, for use in diffing
+// Represents the value of a Number type custom field in a Project.
 type NumberValue struct {
 	Number float64 `graphql:"number"`
 }
@@ -167,16 +180,16 @@ func (t TimeLineItem) Upvotes() int {
 	return upvotes
 }
 
+// BaseFragment is embedded to add common fields to Issues / Pull Requests
+type BaseFragment struct {
+	Comments  TotalCountFragment `graphql:"comments"`
+	Reactions TotalCountFragment `graphql:"reactions"`
+}
+
 // TotalCountFragment is used as a general purpose fragment when the only needed information is
 // the total count of connections.
 type TotalCountFragment struct {
 	TotalCount int `graphql:"totalCount"`
-}
-
-// BaseFragment is used to add common fields to larger parts of the query
-type BaseFragment struct {
-	Comments  TotalCountFragment `graphql:"comments"`
-	Reactions TotalCountFragment `graphql:"reactions"`
 }
 
 // Upvotes returns the number of upvotes from the fields provided by the BaseFragment:
@@ -185,8 +198,8 @@ func (b BaseFragment) Upvotes() int {
 	return b.Comments.TotalCount + b.Reactions.TotalCount
 }
 
-// CombinedBaseFragment combines both IssueBaseFragment and PullRequestBaseFragment
-// for ease of reference, since these generally only occur together
+// CombinedBaseFragment is embedded in the common case of separate Issue and Pull Request
+// fields that are both of type BaseFragment.
 type CombinedBaseFragment struct {
 	Type        string       `graphql:"__typename"`
 	Issue       BaseFragment `graphql:"...on Issue"`

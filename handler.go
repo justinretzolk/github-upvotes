@@ -149,7 +149,7 @@ func (c *Calculator) projectItemQueryService(ctx context.Context, queue chan<- u
 
 	defer close(queue)
 
-	var q UpvoteQuery
+	var q ProjectItemsQuery
 	vars := map[string]interface{}{
 		"org":                c.org,
 		"project":            c.projectNumber,
@@ -230,10 +230,9 @@ func (c *Calculator) processProjectItems(ctx context.Context, queue chan<- updat
 // to the queue channel. It returns an error if one is received.
 func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- updateProjectItemInput, p ProjectItemEdge) error {
 	var upvotes int
-	node := p.Node
 
-	if node.Skip() {
-		slog.Debug("skipping inactive project item", "item_id", node.Id, "cursor", p.Cursor)
+	if p.Skip() {
+		slog.Debug("skipping inactive project item", "item_id", p.Id, "cursor", p.Cursor)
 
 		// The cursor *should* be incremented here, but realistically, these process way faster
 		// than the ones that actually need to be updated, so for now, skipped items don't update the cursor.
@@ -242,12 +241,12 @@ func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- update
 		return nil
 	}
 
-	slog.Debug("calculating upvotes for project item id", "item_id", node.Id, "cursor", p.Cursor)
-	content := node.GetContent()
+	slog.Debug("calculating upvotes for project item id", "item_id", p.Id, "cursor", p.Cursor)
+	content := p.GetContent()
 	upvotes += content.Upvotes()
 
 	if content.TimelineItems.PageInfo.HasNextPage {
-		slog.Debug("project item has additional timeline items", "item_id", node.Id)
+		slog.Debug("project item has additional timeline items", "item_id", p.Id)
 
 		additionalUpvotes, err := c.getAdditionalTimelineItems(ctx, content.Id, content.TimelineItems.PageInfo.EndCursor)
 		if err != nil {
@@ -325,7 +324,7 @@ func (c *Calculator) projectItemUpdateService(ctx context.Context, exitTrigger c
 			case <-ctx.Done():
 				return
 			default:
-				slog.Info("updating project item upvote count", "item_id", rcvd.item.Node.Id, "upvotes", rcvd.upvotes)
+				slog.Info("updating project item upvote count", "item_id", rcvd.item.Id, "upvotes", rcvd.upvotes)
 
 				var mutation struct {
 					UpdateProjectItemV2FieldValue struct {
@@ -335,7 +334,7 @@ func (c *Calculator) projectItemUpdateService(ctx context.Context, exitTrigger c
 
 				input := githubv4.UpdateProjectV2ItemFieldValueInput{
 					ProjectID: c.projectId,
-					ItemID:    rcvd.item.Node.Id,
+					ItemID:    rcvd.item.Id,
 					FieldID:   c.fieldId,
 					Value: githubv4.ProjectV2FieldValue{
 						Number: githubv4.NewFloat(githubv4.Float(rcvd.upvotes)),
