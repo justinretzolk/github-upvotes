@@ -2,20 +2,6 @@ package main
 
 import "github.com/shurcooL/githubv4"
 
-type Upvotable interface {
-	Upvotes() int
-}
-
-func Upvotes(u ...Upvotable) int {
-	var upvotes int
-
-	for _, x := range u {
-		upvotes += x.Upvotes()
-	}
-
-	return upvotes
-}
-
 // ProjectItemsQuery is used to retrieve a list of project items to be processed.
 // A series of embedded structs are used such that it has the fields of the ProjectItems
 // and RateLimit types. See the link below for additional details.
@@ -44,7 +30,7 @@ type Project struct {
 
 // ProjectItems contains paging information and a list of individual project items to be processed
 type ProjectItems struct {
-	PageInfo PageInfo
+	PageInfo `graphql:"pageInfo"`
 	Edges    []ProjectItemEdge
 }
 
@@ -72,27 +58,14 @@ type ProjectItem struct {
 	Content Content
 }
 
+// Skip returns true if the current project item should be skipped when calculating upvotes
+func (p ProjectItem) Skip() bool {
+	return p.IsArchived || p.Content.GetRawContent().Closed || p.Content.Type == "DraftIssue"
+}
+
 // Represents the value of a Number type custom field in a Project.
 type NumberValue struct {
 	Number float64
-}
-
-// GetContent returns the content of the Project Item
-func (p ProjectItem) GetContent() ContentFragment {
-	var x ContentFragment
-	switch p.Type {
-	case "Issue":
-		x = p.Content.Issue
-	default:
-		x = p.Content.PullRequest
-	}
-
-	return x
-}
-
-// Skip returns true if the current project item should be skipped when calculating upvotes
-func (p ProjectItem) Skip() bool {
-	return p.IsArchived || p.Content.isClosed() || p.Content.Type == "DraftIssue"
 }
 
 // Content is the actual Issue or Pull Request connected to a Project Item
@@ -102,9 +75,8 @@ type Content struct {
 	PullRequest ContentFragment `graphql:"...on PullRequest"`
 }
 
-// Upvotes returns the result of Upvotes() for either c.Issue or c.PullRequest
-// depending on the type of the content.
-func (c Content) Upvotes() int {
+// GetRawContent returns the Issue or Pull Request
+func (c Content) GetRawContent() ContentFragment {
 	var content ContentFragment
 	switch c.Type {
 	case "Issue":
@@ -113,21 +85,7 @@ func (c Content) Upvotes() int {
 		content = c.PullRequest
 	}
 
-	return content.upvotes()
-}
-
-// isClosed returns the value of the Closed field for either c.Issue or c.PullRequest
-// depending on the type of the content.
-func (c Content) isClosed() bool {
-	var content ContentFragment
-	switch c.Type {
-	case "Issue":
-		content = c.Issue
-	case "PullRequest":
-		content = c.PullRequest
-	}
-
-	return content.Closed
+	return content
 }
 
 // Common content fragment represents an Issue or Pull Request.
@@ -137,13 +95,13 @@ type ContentFragment struct {
 	Closed bool
 
 	TimelineItems struct {
-		PageInfo PageInfo
+		PageInfo `graphql:"pageInfo"`
 		Nodes    []TimeLineItem
 	} `graphql:"timelineItems(first: 100, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT, ISSUE_COMMENT, MARKED_AS_DUPLICATE_EVENT, REFERENCED_EVENT, SUBSCRIBED_EVENT])"`
 }
 
 // Upvotes returns the total upvotes for the Issue or Pull Request
-func (c ContentFragment) upvotes() int {
+func (c ContentFragment) Upvotes() int {
 	upvotes := c.baseUpvotes()
 
 	for _, node := range c.TimelineItems.Nodes {
@@ -212,7 +170,6 @@ type CombinedBaseFragment struct {
 // depending on c.Type.
 func (c CombinedBaseFragment) upvotes() int {
 	var base BaseFragment
-
 	switch c.Type {
 	case "Issue":
 		base = c.Issue
@@ -239,12 +196,25 @@ type MarkedAsDuplicateEvent struct {
 	CombinedBaseFragment `graphql:"canonical"`
 }
 
-// TODO: Organize this better, below here is for paginating additional timeline items
+// AdditionalTimelineItemQuery is used to query for additional timeline items when there
+// are more than the 100 that are accounted for in the initial ProjectItemsQuery
+type AdditionalTimelineItemQuery struct {
+	Content   `graphql:"node(id: $nodeId)"`
+	RateLimit RateLimit
+}
 
-// Common content fragment used for issues or pull request items
-type TimelineItemQueryContentFragment struct {
-	TimelineItems struct {
-		PageInfo PageInfo
-		Nodes    []TimeLineItem
-	} `graphql:"timelineItems(first: 100, after: $cursor, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT, ISSUE_COMMENT, MARKED_AS_DUPLICATE_EVENT, REFERENCED_EVENT, SUBSCRIBED_EVENT])"`
+// AdditionalProjectDataQuery is used to gather additional information related to a Project Item
+// that's useful when makind mutations
+type AdditionalProjectDataQuery struct {
+	Organization struct {
+		Project struct {
+			Id    githubv4.String
+			Field struct {
+				FieldFragment struct {
+					Id githubv4.String
+				} `graphql:"...on ProjectV2Field"`
+			} `graphql:"field(name: $fieldName)"`
+		} `graphql:"projectV2(number: $project)"`
+	} `graphql:"organization(login: $org)"`
+	RateLimit RateLimit
 }
