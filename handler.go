@@ -66,19 +66,7 @@ func NewCalculator(ctx context.Context) (*Calculator, error) {
 // getAdditionalProjectData queries for the IDs necessary to make mutations to the project
 // and sets their respective values on the Calculator. Also sets rate limit data early on in the program.
 func (c *Calculator) getAdditionalProjectData(ctx context.Context) error {
-	var query struct {
-		Organization struct {
-			Project struct {
-				Id    githubv4.String
-				Field struct {
-					FieldFragment struct {
-						Id githubv4.String
-					} `graphql:"...on ProjectV2Field"`
-				} `graphql:"field(name: $fieldName)"`
-			} `graphql:"projectV2(number: $project)"`
-		} `graphql:"organization(login: $org)"`
-		RateLimit RateLimit
-	}
+	var query AdditionalProjectDataQuery
 
 	vars := map[string]interface{}{
 		"org":       c.org,
@@ -149,7 +137,7 @@ func (c *Calculator) projectItemQueryService(ctx context.Context, queue chan<- u
 
 	defer close(queue)
 
-	var q UpvoteQuery
+	var q ProjectItemsQuery
 	vars := map[string]interface{}{
 		"org":                c.org,
 		"project":            c.projectNumber,
@@ -177,18 +165,17 @@ pageloop:
 				return
 			}
 
-			pi := q.Organization.Project.ProjectItems
-			slog.Debug("upvote query executed", "end_cursor", pi.PageInfo.EndCursor, "cost", q.RateLimit.Cost, "remaining", c.rateLimitRemaining)
+			slog.Debug("upvote query executed", "end_cursor", q.ProjectItems.EndCursor, "cost", q.RateLimit.Cost, "remaining", c.rateLimitRemaining)
 
 			// Update rate limit information
 			c.setRateLimitData(q.RateLimit.Remaining)
 
-			if err := c.processProjectItems(ctx, queue, pi.Edges); err != nil {
+			if err := c.processProjectItems(ctx, queue, q.ProjectItems.Edges); err != nil {
 				c.err <- err
 				return
 			}
 
-			if !pi.PageInfo.HasNextPage {
+			if !q.ProjectItems.HasNextPage {
 				c.cursor = githubv4.String("")
 				return
 			}
@@ -225,15 +212,12 @@ func (c *Calculator) processProjectItems(ctx context.Context, queue chan<- updat
 	return context.Cause(childCtx)
 }
 
-// calculateProjectItemUpvotes calculates the upvotes for a given project item, including paging
-// through any additional pages of TimelineItems, then sends the information to update the project item
-// to the queue channel. It returns an error if one is received.
+// processProjectItem calculates the upvotes for a given project item, including paging through any
+// additional pages of TimelineItems, then sends the information to update the project item to the
+// queue channel. It returns an error if one is received.
 func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- updateProjectItemInput, p ProjectItemEdge) error {
-	var upvotes int
-	node := p.Node
-
-	if node.Skip() {
-		slog.Debug("skipping inactive project item", "item_id", node.Id, "cursor", p.Cursor)
+	if p.Skip() {
+		slog.Debug("skipping inactive project item", "item_id", p.Id, "cursor", p.Cursor)
 
 		// The cursor *should* be incremented here, but realistically, these process way faster
 		// than the ones that actually need to be updated, so for now, skipped items don't update the cursor.
@@ -242,23 +226,24 @@ func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- update
 		return nil
 	}
 
-	slog.Debug("calculating upvotes for project item id", "item_id", node.Id, "cursor", p.Cursor)
-	content := node.GetContent()
-	upvotes += content.Upvotes()
+	slog.Debug("calculating upvotes for project item id", "item_id", p.Id, "cursor", p.Cursor)
 
-	if content.TimelineItems.PageInfo.HasNextPage {
-		slog.Debug("project item has additional timeline items", "item_id", node.Id)
+	content := p.Content.GetRawContent()
+	if content.TimelineItems.HasNextPage {
+		slog.Debug("project item has additional timeline items", "item_id", p.Id)
 
-		additionalUpvotes, err := c.getAdditionalTimelineItems(ctx, content.Id, content.TimelineItems.PageInfo.EndCursor)
+		additionalItems, err := c.getAdditionalTimelineItems(ctx, content.Id, content.TimelineItems.EndCursor)
 		if err != nil {
 			return err
 		}
-		upvotes += additionalUpvotes
+
+		content.TimelineItems.Nodes = append(content.TimelineItems.Nodes, additionalItems...)
 	}
 
+	// enqueue the item for update
 	queue <- updateProjectItemInput{
 		item:    p,
-		upvotes: upvotes,
+		upvotes: content.Upvotes(),
 	}
 
 	return nil
@@ -268,18 +253,12 @@ func (c *Calculator) processProjectItem(ctx context.Context, queue chan<- update
 // It takes two githubv4.Strings representing the node ID of the Issue or Pull Request, and the cursor
 // for the TimelineItems page. It returns an int representing the number of upvotes calculates from the
 // remaining timeline items.
-func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cursor githubv4.String) (int, error) {
+func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cursor githubv4.String) ([]TimeLineItem, error) {
 
-	var upvotes int
-
-	var q struct {
-		Node struct {
-			Type        githubv4.String `graphql:"__typename"`
-			Issue       ContentFragment `graphql:"...on Issue"`
-			PullRequest ContentFragment `graphql:"...on PullRequest"`
-		} `graphql:"node(id: $nodeId)"`
-		RateLimit RateLimit
-	}
+	var (
+		items []TimeLineItem
+		q     AdditionalTimelineItemQuery
+	)
 
 	vars := map[string]interface{}{
 		"nodeId": nodeId,
@@ -290,27 +269,21 @@ func (c *Calculator) getAdditionalTimelineItems(ctx context.Context, nodeId, cur
 		slog.Debug("getting additional timeline items", "node_id", nodeId, "timeline_items_cursor", cursor)
 		err := c.client.Query(ctx, &q, vars)
 		if err != nil {
-			return upvotes, err
+			return items, err
 		}
-
-		var content ContentFragment
-		if q.Node.Type == githubv4.String("Issue") {
-			content = q.Node.Issue
-		} else {
-			content = q.Node.PullRequest
-		}
-
-		upvotes += content.Upvotes()
 		c.setRateLimitData(q.RateLimit.Remaining)
 
-		if !content.TimelineItems.PageInfo.HasNextPage {
+		items = append(items, q.Issue.TimelineItems.Nodes...)
+
+		pageInfo := q.Content.GetRawContent().TimelineItems.PageInfo
+		if !pageInfo.HasNextPage {
 			break
 		}
 
-		vars["cursor"] = content.TimelineItems.PageInfo.EndCursor
+		vars["cursor"] = pageInfo.EndCursor
 	}
 
-	return upvotes, nil
+	return items, nil
 }
 
 // projectItemUpdateService receives requests and updates project items. It returns an error to the error
@@ -325,7 +298,7 @@ func (c *Calculator) projectItemUpdateService(ctx context.Context, exitTrigger c
 			case <-ctx.Done():
 				return
 			default:
-				slog.Info("updating project item upvote count", "item_id", rcvd.item.Node.Id, "upvotes", rcvd.upvotes)
+				slog.Info("updating project item upvote count", "item_id", rcvd.item.Id, "upvotes", rcvd.upvotes)
 
 				var mutation struct {
 					UpdateProjectItemV2FieldValue struct {
@@ -335,7 +308,7 @@ func (c *Calculator) projectItemUpdateService(ctx context.Context, exitTrigger c
 
 				input := githubv4.UpdateProjectV2ItemFieldValueInput{
 					ProjectID: c.projectId,
-					ItemID:    rcvd.item.Node.Id,
+					ItemID:    rcvd.item.Id,
 					FieldID:   c.fieldId,
 					Value: githubv4.ProjectV2FieldValue{
 						Number: githubv4.NewFloat(githubv4.Float(rcvd.upvotes)),
