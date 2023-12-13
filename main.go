@@ -29,7 +29,12 @@ func validateEnv() error {
 }
 
 func main() {
+	// Metrics calculation (runtime)
 	defer timer(time.Now())()
+
+	// Ensure that a value is always output for cursor data
+	var cursor *githubv4.String
+	defer output(cursor)()
 
 	// Enable Debug Logging
 	// The existence of these env vars is enough to trigger debug in Actions, so will here too
@@ -55,7 +60,6 @@ func main() {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
-	defer output(&c.cursor)()
 
 	err = c.UpdateUpvotes(ctx)
 	if err != nil {
