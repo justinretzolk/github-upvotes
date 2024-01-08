@@ -104,7 +104,7 @@ func (c *Calculator) calculateUpvotesMetrics(start int) func() {
 
 // UpdateUpvotes iterates over the items in the project, calculating the upvotes for them, and then
 // updating the project item's upvote field with the new number.
-func (c *Calculator) UpdateUpvotes(ctx context.Context) error {
+func (c *Calculator) UpdateUpvotesOld(ctx context.Context) error {
 
 	// Metrics around GraphQL rate limit usage
 	defer c.calculateUpvotesMetrics(c.rateLimitRemaining)()

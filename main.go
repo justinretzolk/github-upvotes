@@ -5,36 +5,49 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/shurcooL/githubv4"
+	"golang.org/x/oauth2"
 )
 
-// init validates that the required variables are set before running
-func validateEnv() error {
-	requiredVars := []string{"GITHUB_TOKEN", "GITHUB_ORGANIZATION", "GITHUB_OUTPUT", "PROJECT_NUMBER", "UPVOTE_FIELD_NAME"}
-	var missing []string
+// Required variables
+const (
+	GitHubTokenEnvironmentVariable         = "GITHUB_TOKEN"
+	GitHubOrganizationEnvironmentVariable  = "GITHUB_ORGANIZATION"
+	GitHubOutputEnvironmentVariable        = "GITHUB_OUTPUT"
+	GitHubProjectNumberEnvironmentVariable = "PROJECT_NUMBER"
+	GitHubCursorEnvironmentVariable        = "CURSOR"
+)
 
-	for _, k := range requiredVars {
-		if _, ok := os.LookupEnv(k); !ok {
-			missing = append(missing, k)
-		}
+// EnvironmentVariables_Values returns all elements of the EnvironmentVariables enum
+func EnvironmentVariables_Values() []string {
+	return []string{
+		GitHubTokenEnvironmentVariable,
+		GitHubOrganizationEnvironmentVariable,
+		GitHubOutputEnvironmentVariable,
+		GitHubProjectNumberEnvironmentVariable,
 	}
-
-	if len(missing) > 0 {
-		return fmt.Errorf("missing required environment variables: %v", missing)
-	}
-
-	return nil
 }
 
 func main() {
+
+	// Validate the environment
+	if err := validateEnv(); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
+
 	// Metrics calculation (runtime)
 	defer timer(time.Now())()
 
 	// Ensure that a value is always output for cursor data
 	var cursor *githubv4.String
-	defer output(cursor)()
+	if c, ok := os.LookupEnv(GitHubCursorEnvironmentVariable); ok {
+		cursor = githubv4.NewString(githubv4.String(c))
+	}
+	defer output(cursor, os.Getenv(GitHubOutputEnvironmentVariable))()
 
 	// Enable Debug Logging
 	// The existence of these env vars is enough to trigger debug in Actions, so will here too
@@ -49,25 +62,65 @@ func main() {
 		slog.SetDefault(logger)
 	}
 
-	if err := validateEnv(); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
-	}
+	// Create a connection to GitHub
+	token := os.Getenv(GitHubTokenEnvironmentVariable)
+	src := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	httpClient := oauth2.NewClient(context.Background(), src)
+	gh := githubv4.NewClient(httpClient)
 
-	ctx := context.Background()
-	c, err := NewCalculator(ctx)
+	// Instantiate a GitHubProject
+	projectInt, err := strconv.Atoi(os.Getenv(GitHubProjectNumberEnvironmentVariable))
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
 
-	err = c.UpdateUpvotes(ctx)
+	project, err := NewGitHubProject(gh, os.Getenv(GitHubOrganizationEnvironmentVariable), projectInt)
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
+
+	if err := project.UpdateUpvotes(gh, cursor); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
+
+	/*
+		ctx := context.Background()
+		c, err := NewCalculator(ctx)
+		if err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+
+		err = c.UpdateUpvotes(ctx)
+		if err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+	*/
 }
 
+// validateEnv validates that the required variables are set
+func validateEnv() error {
+	var missing []string
+
+	for _, k := range EnvironmentVariables_Values() {
+
+		if _, ok := os.LookupEnv(k); !ok {
+			missing = append(missing, k)
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required environment variables: %v", missing)
+	}
+
+	return nil
+}
+
+// timer helps measure the time that the program takes to run
 func timer(t time.Time) func() {
 	return func() {
 		slog.Info(fmt.Sprintf("elapsed time: %v", time.Since(t)))
@@ -75,7 +128,7 @@ func timer(t time.Time) func() {
 }
 
 // output writes the cursor to the file at $GITHUB_OUTPUT
-func output(cursor *githubv4.String) func() {
+func output(cursor *githubv4.String, path string) func() {
 	return func() {
 		var c string
 		if cursor != nil {
