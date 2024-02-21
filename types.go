@@ -48,10 +48,7 @@ type ProjectItemFragment struct {
 	Type         string
 	UpvotesField struct {
 		ProjectV2ItemFieldNumberValueFragment `graphql:"...on ProjectV2ItemFieldNumberValue"`
-	} `graphql:"upvotesField: fieldValueByName(name:\"Upvotes\")"` // todo: reconsider opinionated field name
-	UpvotesCursorField struct {
-		ProjectV2ItemFieldTextValueFragment `graphql:"...on ProjectV2ItemFieldTextValue"`
-	} `graphql:"upvotesCursorField: fieldValueByName(name:\"Upvotes_Cursor\")"` // todo: reconsider opinionated field name
+	} `graphql:"fieldValueByName(name:\"Upvotes\")"` // todo: reconsider opinionated field name
 	Content Content
 }
 
@@ -77,22 +74,12 @@ func (p ProjectItemFragment) GetContent() ContentFragment {
 // - The issue or pull request connected to the project item is closed
 // - There are no new timeline items since the existing cursor
 func (p ProjectItemFragment) Skip() bool {
-	return p.Type == "DraftIssue" || p.IsArchived || p.GetContent().Closed || !p.current()
-}
-
-// Current returns true if there have been no updates since the last run
-func (p ProjectItemFragment) current() bool {
-	return p.UpvotesCursorField.Value != p.GetContent().TimelineItems.EndCursor
+	return p.Type == "DraftIssue" || p.IsArchived || p.GetContent().Closed
 }
 
 // ProjectV2ItemFieldNumberValueFragment is used to get the value of a number field in a project
 type ProjectV2ItemFieldNumberValueFragment struct {
 	Value float64 `graphql:"number"`
-}
-
-// ProjectV2ItemFieldTextValueFragment is used to get the value of a text field in a project
-type ProjectV2ItemFieldTextValueFragment struct {
-	Value githubv4.String `graphql:"text"`
 }
 
 // Content is the actual Issue or Pull Request connected to a Project Item
@@ -116,7 +103,7 @@ type ContentFragment struct {
 
 // Upvotes returns the total upvotes for the Issue or Pull Request
 func (c ContentFragment) Upvotes() int {
-	upvotes := c.countOfCommentsAndReactions()
+	upvotes := c.Comments.TotalCount + c.Reactions.TotalCount
 
 	for _, node := range c.TimelineItems.Nodes {
 		upvotes += node.upvotes()
@@ -129,11 +116,6 @@ func (c ContentFragment) Upvotes() int {
 type CommentsAndReactionsFragment struct {
 	Comments  TotalCountFragment
 	Reactions TotalCountFragment
-}
-
-// countOfCommentsAndReactions returns the number of comments on and reactions to the item.
-func (c CommentsAndReactionsFragment) countOfCommentsAndReactions() int {
-	return c.Comments.TotalCount + c.Reactions.TotalCount
 }
 
 // TotalCountFragment is used as a general purpose fragment when the only needed information is
@@ -181,14 +163,18 @@ type IssueOrPullRequestCommentsAndReactionsFragment struct {
 
 // upvotes returns the count of comments and reactions to the Issue or Pull Request connected to a TimelineItem
 func (i IssueOrPullRequestCommentsAndReactionsFragment) upvotes() int {
+
+	var content CommentsAndReactionsFragment
+
 	switch i.Type {
 	case "Issue":
-		return i.Issue.countOfCommentsAndReactions()
+		content = i.Issue
 	case "PullRequest":
-		return i.PullRequest.countOfCommentsAndReactions()
-	default:
-		return 0 // todo: there's probably a better way to do this
+		content = i.PullRequest
 	}
+
+	return content.Comments.TotalCount + content.Reactions.TotalCount
+
 }
 
 // Represents events when an issue or pull request was connected to, or cross-referenced
@@ -233,4 +219,11 @@ func (p ProjectItemQuery) HasNextPage() bool {
 // ProjectV2ItemObjectFragment is an intermediary fragment used for selecting the ProjectV2Item object
 type ProjectV2ItemObjectFragment struct {
 	ProjectItemFragment `graphql:"...on ProjectV2Item"`
+}
+
+// Update instructs what node to update and the number of votes to update with
+type Update struct {
+	Id      githubv4.ID
+	Upvotes *githubv4.Float
+	Cursor  githubv4.String
 }
