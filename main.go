@@ -12,58 +12,37 @@ import (
 
 func main() {
 
-	// always output the cursor
-	defer output()
-
-	// load the environment
-	viper.SetEnvPrefix("GITHUB")
-	viper.AutomaticEnv()
-
-	if !viper.IsSet("TOKEN") {
-		slog.Error("Missing required environment variable: GITHUB_TOKEN")
+	if err := validateEnv(); err != nil {
+		slog.Error(err.Error())
 		os.Exit(1)
 	}
 
-	// Debug Logging
-	if _, ok := os.LookupEnv("RUNNER_DEBUG"); ok {
-		opts := &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		}
-
-		logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
-		slog.SetDefault(logger)
-	}
-
-	// Create a connection to GitHub
+	// setup github client
 	ctx := context.Background()
 	src := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: viper.GetString("TOKEN")})
 	gh := githubv4.NewClient(oauth2.NewClient(ctx, src))
 
-	project, field, err := GetProjectInfo(gh)
-	if err != nil {
+	// context for early exit
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// channel for capturing errors
+	errChan := make(chan error)
+
+	// load project data
+	project := githubv4.ID(viper.GetString("PROJECT_ID"))
+	field := githubv4.ID(viper.GetString("FIELD_ID"))
+
+	// start the pipeline
+	itemChan, wg := GetProjectItems(childCtx, gh, project, errChan)
+	updateChan := ProcessProjectItems(childCtx, gh, itemChan, errChan)
+	done := UpdateProjectItems(childCtx, gh, wg, project, field, updateChan, errChan)
+
+	select {
+	case err := <-errChan:
+		cancel()
 		slog.Error(err.Error())
-		os.Exit(1)
-	}
-
-	if err := UpdateUpvotes(gh, ctx, project, field); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
-	}
-}
-
-// output writes the cursor to the file at $GITHUB_OUTPUT
-func output() func() {
-	return func() {
-		outputFile, err := os.OpenFile(viper.GetString("OUTPUT"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-		if err != nil {
-			slog.Error(err.Error())
-			os.Exit(1)
-		}
-
-		defer outputFile.Close()
-		if _, err := outputFile.WriteString(viper.GetString("CURSOR")); err != nil {
-			slog.Error(err.Error())
-			os.Exit(1)
-		}
+	case <-done:
+		break
 	}
 }
