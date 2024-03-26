@@ -4,29 +4,22 @@ import "github.com/shurcooL/githubv4"
 
 // ProjectItemsQuery is used to list the project items in a project
 type ProjectItemsQuery struct {
-	ProjectV2ObjectFragment `graphql:"node(id: $nodeId)"`
+	Node struct {
+		Project struct {
+			Items struct {
+				Edges []struct {
+					ProjectItemFragment `graphql:"node"`
+					Cursor              githubv4.String
+				}
+				PageInfo `graphql:"pageInfo"`
+			} `graphql:"items(first:10, after: $cursor)"`
+		} `graphql:"...on ProjectV2"`
+	} `graphql:"node(id: $nodeId)"`
 }
 
 // HasNextPage returns true if there are additional project items to be listed
 func (p ProjectItemsQuery) HasNextPage() bool {
-	return p.Items.HasNextPage
-}
-
-// ProjectV2ObjectFragment is an intermediary fragment used for selecting the ProjectV2 object
-type ProjectV2ObjectFragment struct {
-	ProjectFragment `graphql:"...on ProjectV2"`
-}
-
-// ProjectFragment represents a ProjectV2 object
-type ProjectFragment struct {
-	Items ProjectItemsFragment `graphql:"items(first:10, after: $cursor)"`
-}
-
-// ProjectItemsFragment is used as an embedded struct in ProjectFragment, and represents
-// the information about the items in a project
-type ProjectItemsFragment struct {
-	PageInfo `graphql:"pageInfo"`
-	Edges    []ProjectItemEdgeFragment
+	return p.Node.Project.Items.HasNextPage
 }
 
 // PageInfo represents pagingation information returned by GitHub's GraphQL API
@@ -35,19 +28,15 @@ type PageInfo struct {
 	HasNextPage bool
 }
 
-// ProjectItemEdgeFragment represents the connection between a project and a project item
-type ProjectItemEdgeFragment struct {
-	Cursor              githubv4.String
-	ProjectItemFragment `graphql:"node"`
-}
-
 // ProjectItemFragment represents a node at the end of a ProjectItemEdge
 type ProjectItemFragment struct {
-	Id           githubv4.ID
-	IsArchived   bool
-	Type         string
-	UpvotesField struct {
-		ProjectV2ItemFieldNumberValueFragment `graphql:"...on ProjectV2ItemFieldNumberValue"`
+	Id         githubv4.ID
+	IsArchived bool
+	Type       string
+	Field      struct {
+		NumberValueTypeField struct {
+			Value float64 `graphql:"number"`
+		} `graphql:"...on ProjectV2ItemFieldNumberValue"`
 	} `graphql:"fieldValueByName(name:\"Upvotes\")"` // todo: reconsider opinionated field name
 	Content Content
 }
@@ -75,11 +64,6 @@ func (p ProjectItemFragment) GetContent() ContentFragment {
 // - There are no new timeline items since the existing cursor
 func (p ProjectItemFragment) Skip() bool {
 	return p.Type == "DraftIssue" || p.IsArchived || p.GetContent().Closed
-}
-
-// ProjectV2ItemFieldNumberValueFragment is used to get the value of a number field in a project
-type ProjectV2ItemFieldNumberValueFragment struct {
-	Value float64 `graphql:"number"`
 }
 
 // Content is the actual Issue or Pull Request connected to a Project Item
