@@ -87,6 +87,9 @@ func ProcessProjectItems(ctx context.Context, gh *githubv4.Client, in <-chan Pro
 				slog.Debug("querying for additional timeline items", "node_id", item.Id)
 				if err := gh.Query(ctx, &query, variables); err != nil {
 					errChan <- err
+
+					// TODO: This doesn't decrement the waitgroup from GetProjectItems
+					// which I think is a bug -- if I'm not mistaken, this could lead to deadlock
 					return
 				}
 
@@ -143,6 +146,9 @@ func UpdateProjectItems(ctx context.Context, gh *githubv4.Client, wg *sync.WaitG
 
 			if err := gh.Mutate(ctx, &mutation, input, nil); err != nil {
 				errChan <- err
+
+				// TODO: This doesn't decrement the waitgroup from GetProjectItems
+				// which I think is a bug -- if I'm not mistaken, this could lead to deadlock
 				break
 			}
 
