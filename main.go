@@ -2,99 +2,47 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/shurcooL/githubv4"
+	"github.com/spf13/viper"
+	"golang.org/x/oauth2"
 )
 
-// init validates that the required variables are set before running
-func validateEnv() error {
-	requiredVars := []string{"GITHUB_TOKEN", "GITHUB_ORGANIZATION", "GITHUB_OUTPUT", "PROJECT_NUMBER", "UPVOTE_FIELD_NAME"}
-	var missing []string
-
-	for _, k := range requiredVars {
-		if _, ok := os.LookupEnv(k); !ok {
-			missing = append(missing, k)
-		}
-	}
-
-	if len(missing) > 0 {
-		return fmt.Errorf("missing required environment variables: %v", missing)
-	}
-
-	return nil
-}
-
 func main() {
-	// Metrics calculation (runtime)
-	defer timer(time.Now())()
-
-	// Ensure that a value is always output for cursor data
-	var cursor *githubv4.String
-	defer output(cursor)()
-
-	// Enable Debug Logging
-	// The existence of these env vars is enough to trigger debug in Actions, so will here too
-	_, runnerDebug := os.LookupEnv("RUNNER_DEBUG")
-	_, stepDebug := os.LookupEnv("STEP_DEBUG")
-	if runnerDebug || stepDebug {
-		opts := &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		}
-
-		logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
-		slog.SetDefault(logger)
-	}
 
 	if err := validateEnv(); err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
 
+	// setup github client
 	ctx := context.Background()
-	c, err := NewCalculator(ctx)
-	if err != nil {
+	src := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: viper.GetString("TOKEN")})
+	gh := githubv4.NewClient(oauth2.NewClient(ctx, src))
+
+	// context for early exit
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// channel for capturing errors
+	errChan := make(chan error)
+
+	// load project data
+	project := githubv4.ID(viper.GetString("PROJECT_ID"))
+	field := githubv4.ID(viper.GetString("FIELD_ID"))
+
+	// start the pipeline
+	itemChan, wg := GetProjectItems(childCtx, gh, project, errChan)
+	updateChan := ProcessProjectItems(childCtx, gh, itemChan, errChan)
+	done := UpdateProjectItems(childCtx, gh, wg, project, field, updateChan, errChan)
+
+	select {
+	case err := <-errChan:
+		cancel()
 		slog.Error(err.Error())
-		os.Exit(1)
-	}
-
-	err = c.UpdateUpvotes(ctx)
-	if err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
-	}
-}
-
-func timer(t time.Time) func() {
-	return func() {
-		slog.Info(fmt.Sprintf("elapsed time: %v", time.Since(t)))
-	}
-}
-
-// output writes the cursor to the file at $GITHUB_OUTPUT
-func output(cursor *githubv4.String) func() {
-	return func() {
-		var c string
-		if cursor != nil {
-			c = (string)(*cursor)
-		}
-
-		path := os.Getenv("GITHUB_OUTPUT")
-		output := fmt.Sprintf("cursor=%s\n", c)
-
-		outputFile, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-		if err != nil {
-			slog.Error(err.Error())
-			os.Exit(1)
-		}
-
-		defer outputFile.Close()
-		if _, err := outputFile.WriteString(output); err != nil {
-			slog.Error(err.Error())
-			os.Exit(1)
-		}
+	case <-done:
+		break
 	}
 }
