@@ -101,17 +101,6 @@ type ContentFragment struct {
 	} `graphql:"timelineItems(first: 10, after: $timelineCursor, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT, ISSUE_COMMENT, MARKED_AS_DUPLICATE_EVENT, REFERENCED_EVENT, SUBSCRIBED_EVENT])"`
 }
 
-// Upvotes returns the total upvotes for the Issue or Pull Request
-func (c ContentFragment) Upvotes() int {
-	upvotes := c.Comments.TotalCount + c.Reactions.TotalCount
-
-	for _, node := range c.TimelineItems.Nodes {
-		upvotes += node.upvotes()
-	}
-
-	return upvotes
-}
-
 // CommentsAndReactionsFragment is embedded to add the Comments and Reactions fields
 type CommentsAndReactionsFragment struct {
 	Comments  TotalCountFragment
@@ -134,25 +123,6 @@ type TimelineItem struct {
 	MarkedAsDuplicateEvent MarkedAsDuplicateEvent          `graphql:"...on MarkedAsDuplicateEvent"`
 }
 
-// Upvotes returns the total upvotes for the given timeline item
-func (t TimelineItem) upvotes() int {
-	// the fact that the timeline item exists means that the minimum upvotes is 1
-	upvotes := 1
-
-	switch t.Type {
-	case "ConnectedEvent":
-		upvotes += t.ConnectedEvent.upvotes()
-	case "CrossReferencedEvent":
-		upvotes += t.CrossReferencedEvent.upvotes()
-	case "IssueComment":
-		upvotes += t.IssueComment.Reactions.TotalCount
-	case "MarkedAsDuplicateEvent":
-		upvotes += t.MarkedAsDuplicateEvent.upvotes()
-	}
-
-	return upvotes
-}
-
 // IssueOrPullRequestCommentsAndReactionsFragment is embedded in the common case of separate Issue and Pull Request
 // fields that are both of type CommentsAndReactionsFragment.
 type IssueOrPullRequestCommentsAndReactionsFragment struct {
@@ -161,9 +131,9 @@ type IssueOrPullRequestCommentsAndReactionsFragment struct {
 	PullRequest CommentsAndReactionsFragment `graphql:"...on PullRequest"`
 }
 
-// upvotes returns the count of comments and reactions to the Issue or Pull Request connected to a TimelineItem
-func (i IssueOrPullRequestCommentsAndReactionsFragment) upvotes() int {
-
+// GetCommentsAndReactionsFragment returns the CommentsAndReactionsFragment representing the
+// Issue or Pull Request of a IssueOrPullRequestCommentsAndReactionsFragment
+func (i IssueOrPullRequestCommentsAndReactionsFragment) GetCommentsAndReactionsFragment() CommentsAndReactionsFragment {
 	var content CommentsAndReactionsFragment
 
 	switch i.Type {
@@ -173,8 +143,7 @@ func (i IssueOrPullRequestCommentsAndReactionsFragment) upvotes() int {
 		content = i.PullRequest
 	}
 
-	return content.Comments.TotalCount + content.Reactions.TotalCount
-
+	return content
 }
 
 // Represents events when an issue or pull request was connected to, or cross-referenced

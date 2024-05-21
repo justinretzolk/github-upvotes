@@ -105,7 +105,7 @@ func ProcessProjectItems(ctx context.Context, gh *githubv4.Client, in <-chan Pro
 
 		out <- Update{
 			Id:      item.Id,
-			Upvotes: githubv4.NewFloat(githubv4.Float(content.Upvotes())),
+			Upvotes: githubv4.NewFloat(githubv4.Float(Upvotes(content))),
 			Cursor:  item.Cursor,
 		}
 	}
