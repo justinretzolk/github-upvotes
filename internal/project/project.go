@@ -1,21 +1,22 @@
-package main
+package project
 
 import (
 	"context"
 	"log/slog"
 	"sync"
 
+	"github.com/justinretzolk/github-upvotes/internal/types"
 	"github.com/shurcooL/githubv4"
 )
 
 // GetProjectItems pages through the list of items within the GitHub Project. It requires a context, GitHub client,
 // the ID of the GitHub Project, and a channel on which to send errors. It returns a channel that receives ProjectItemEdgeFragment
 // types, and a WaitGroup used for synchronizing when the next page should be queried.
-func GetProjectItems(ctx context.Context, gh *githubv4.Client, projectId githubv4.ID, errChan chan<- error) (<-chan ProjectItemEdgeFragment, *sync.WaitGroup) {
-	out := make(chan ProjectItemEdgeFragment)
+func GetProjectItems(ctx context.Context, gh *githubv4.Client, projectId githubv4.ID, errChan chan<- error) (<-chan types.ProjectItemEdgeFragment, *sync.WaitGroup) {
+	out := make(chan types.ProjectItemEdgeFragment)
 	var wg sync.WaitGroup
 
-	var query ProjectItemsQuery
+	var query types.ProjectItemsQuery
 	variables := map[string]interface{}{
 		"nodeId": projectId,
 		"cursor": (*githubv4.String)(nil),
@@ -69,14 +70,14 @@ func GetProjectItems(ctx context.Context, gh *githubv4.Client, projectId githubv
 // generates an Update type, representing the data required to update a project item's upvotes. It requires a context,
 // GitHub client, a channel in which to receive ProjectItemEdgeFragment types, and a channel on which to report errors.
 // It returns a channel that receives Update types.
-func ProcessProjectItems(ctx context.Context, gh *githubv4.Client, in <-chan ProjectItemEdgeFragment, errChan chan<- error) <-chan Update {
-	out := make(chan Update)
+func ProcessProjectItems(ctx context.Context, gh *githubv4.Client, in <-chan types.ProjectItemEdgeFragment, errChan chan<- error) <-chan types.Update {
+	out := make(chan types.Update)
 
-	process := func(item ProjectItemEdgeFragment) {
+	process := func(item types.ProjectItemEdgeFragment) {
 		content := item.GetContent()
 
 		if content.TimelineItems.HasNextPage {
-			var query ProjectItemQuery
+			var query types.ProjectItemQuery
 
 			variables := map[string]interface{}{
 				"nodeId":         item.Id,
@@ -103,7 +104,7 @@ func ProcessProjectItems(ctx context.Context, gh *githubv4.Client, in <-chan Pro
 			}
 		}
 
-		out <- Update{
+		out <- types.Update{
 			Id:      item.Id,
 			Upvotes: githubv4.NewFloat(githubv4.Float(content.Upvotes())),
 			Cursor:  item.Cursor,
@@ -124,7 +125,7 @@ func ProcessProjectItems(ctx context.Context, gh *githubv4.Client, in <-chan Pro
 // It requires a context, GitHub client, a WaitGroup for syncronizing pagination, the GitHub Project's ID,
 // and the ID of the custom 'upvotes' field on the Project. It returns a channel used to indicate that all
 // updates have completed.
-func UpdateProjectItems(ctx context.Context, gh *githubv4.Client, wg *sync.WaitGroup, projectId githubv4.ID, fieldId githubv4.ID, in <-chan Update, errChan chan<- error) <-chan struct{} {
+func UpdateProjectItems(ctx context.Context, gh *githubv4.Client, wg *sync.WaitGroup, projectId githubv4.ID, fieldId githubv4.ID, in <-chan types.Update, errChan chan<- error) <-chan struct{} {
 	out := make(chan struct{})
 
 	var mutation struct {

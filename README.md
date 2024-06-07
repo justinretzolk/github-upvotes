@@ -2,14 +2,27 @@
 
 This project is meant to calculate "upvotes" for items in a GitHub Project, then update a field in the Project with the result. It's meant to eventually be run in a GitHub Action The README is a WIP.
 
-Required environment variables:
+### Arguments
 
-- `GITHUB_TOKEN`: a token with permissions to read issues/prs in the repository + read/write to the project
-- `GITHUB_PROJECT_ID`: the ID of the GitHub Project. 
-- `GITHUB_FIELD_ID`: the ID of the 'upvotes' field in the GitHub Project.
+| Flag    | Required | Environment Variable | Description                                                             |
+| ------- | -------- | -------------------- | ----------------------------------------------------------------------- |
+| token   | true     | GITHUB_TOKEN         | The token used to authenticate with the GitHub API                      |
+| project | true     | PROJECT_ID           | The ID of the GitHub Project to be updated                              |
+| field   | true     | FIELD_ID             | The ID of the Field in the GitHub Project that is used to track upvotes |
+| verbose | false    | RUNNER_DEBUG         | Output verbose / debug logging                                          |
 
-For the project and field IDs respectively, see [here](https://cli.github.com/manual/gh_project_view) and [here](https://cli.github.com/manual/gh_project_field-list). 
+### Retrieving Required IDs
 
-Optional environment variables:
+The `gh` CLI can be used to retrieve the Project and Field IDs.
 
-- `RUNNER_DEBUG`: matches GitHub's environment variable for Actions debugging.
+Project ID:
+
+```shell
+$ gh project view $PROJECT_NUMBER --owner $ORGANIZATION_OR_USERNAME --format json --jq '.id'
+```
+
+Field ID (replace `<name_of_field>` with the name of the field used to track upvotes)
+
+```shell
+$ gh project field-list 231 --owner hashicorp --format json --jq '.fields[] | select(.name == "<name_of_field>") | .id'
+```
